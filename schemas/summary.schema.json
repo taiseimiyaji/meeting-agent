@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/summary.schema.json",
+  "title": "MeetingSummary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "decisions", "actionItems", "openQuestions", "topics"],
+  "properties": {
+    "summary": { "type": "string" },
+    "decisions": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+    "actionItems": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+    "openQuestions": { "type": "array", "items": { "$ref": "#/$defs/item" } },
+    "topics": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "evidenceIds"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1 },
+        "evidenceIds": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "assignee": { "type": ["string", "null"] },
+        "dueAt": { "type": ["string", "null"], "format": "date-time" }
+      }
+    }
+  }
+}

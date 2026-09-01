@@ -1,0 +1,258 @@
+openapi: 3.1.0
+info:
+  title: Meeting Agent Local API
+  version: 0.1.0
+servers:
+  - url: http://127.0.0.1:8765/api
+security:
+  - sessionToken: []
+paths:
+  /health:
+    get:
+      security: []
+      responses:
+        "200":
+          description: Agent health
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /capture:
+    get:
+      responses:
+        "200":
+          description: Current capture state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CaptureState"
+  /capture/start:
+    post:
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                targetId: { type: string }
+      responses:
+        "202": { description: Capture is starting }
+        "409": { description: Capture is already active }
+  /capture/stop:
+    post:
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "202": { description: Capture is stopping }
+  /meetings:
+    get:
+      parameters:
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: Meeting page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Meeting" }
+                  nextCursor: { type: [string, "null"] }
+  /meetings/{meetingId}:
+    get:
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+      responses:
+        "200":
+          description: Meeting detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Meeting" }
+        "404": { description: Meeting not found }
+  /meetings/{meetingId}/timeline:
+    get:
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+        - name: afterMs
+          in: query
+          schema: { type: integer, minimum: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+      responses:
+        "200":
+          description: Time-ordered evidence
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Timeline" }
+  /meetings/{meetingId}/summary:
+    get:
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+      responses:
+        "200":
+          description: Active summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Summary" }
+  /meetings/{meetingId}/summarize:
+    post:
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "202": { description: Summary job queued }
+  /meetings/{meetingId}/export:
+    post:
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "202": { description: Export job queued }
+  /events:
+    get:
+      summary: WebSocket upgrade endpoint
+      description: >-
+        Browser clients authenticate the upgrade with two Sec-WebSocket-Protocol
+        values: `meeting-agent` and `token.<base64url-session-token>`. The server
+        validates the token protocol but selects and echoes only `meeting-agent`.
+        The session token must not be placed in the URL.
+      security: []
+      x-websocket-protocols:
+        - meeting-agent
+        - token.<base64url-session-token>
+      responses:
+        "101": { description: Switching protocols }
+  /screens/{screenId}/image:
+    get:
+      parameters:
+        - name: screenId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Key frame image stored under the local evidence root
+          headers:
+            Cache-Control: { schema: { const: no-store } }
+          content:
+            image/jpeg: { schema: { type: string, contentEncoding: binary } }
+            image/png: { schema: { type: string, contentEncoding: binary } }
+            image/heic: { schema: { type: string, contentEncoding: binary } }
+        "404": { description: Screen image not found }
+components:
+  securitySchemes:
+    sessionToken:
+      type: apiKey
+      in: header
+      name: Authorization
+  parameters:
+    MeetingId:
+      name: meetingId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: { type: string }
+  schemas:
+    Health:
+      type: object
+      required: [status, version]
+      properties:
+        status: { const: ok }
+        version: { type: string }
+    CaptureState:
+      type: object
+      required: [status, videoFrames, systemAudioRms, microphoneRms]
+      properties:
+        status: { enum: [idle, starting, capturing, stopping, failed] }
+        meetingId: { type: [string, "null"] }
+        videoFrames: { type: integer, minimum: 0 }
+        systemAudioRms: { type: number, minimum: 0 }
+        microphoneRms: { type: number, minimum: 0 }
+        error: { type: [string, "null"] }
+    Meeting:
+      type: object
+      required: [id, startedAt, status]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: [string, "null"] }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: [string, "null"], format: date-time }
+        status:
+          enum: [idle, capturing, finalizing, analyzing, completed, interrupted, partially_completed, failed]
+    ScreenReference:
+      type: object
+      required: [screenId, relation]
+      properties:
+        screenId: { type: string }
+        relation: { enum: [visible_during_speech, previously_visible, explicitly_referenced] }
+        overlapMs: { type: [integer, "null"], minimum: 0 }
+        confidence: { type: [number, "null"], minimum: 0, maximum: 1 }
+    TranscriptEvent:
+      type: object
+      required: [id, revision, startedAtMs, speaker, source, text, isFinal, screenRefs]
+      properties:
+        id: { type: string }
+        revision: { type: integer, minimum: 1 }
+        startedAtMs: { type: integer, minimum: 0 }
+        endedAtMs: { type: [integer, "null"], minimum: 0 }
+        speaker: { enum: [self, remote, unknown] }
+        source: { enum: [microphone, system_audio, imported] }
+        text: { type: string }
+        isFinal: { type: boolean }
+        screenRefs:
+          type: array
+          items: { $ref: "#/components/schemas/ScreenReference" }
+    ScreenEvent:
+      type: object
+      required: [id, startedAtMs, imageUrl, analysisStatus]
+      properties:
+        id: { type: string }
+        startedAtMs: { type: integer, minimum: 0 }
+        endedAtMs: { type: [integer, "null"], minimum: 0 }
+        imageUrl: { type: string }
+        ocr: { type: [string, "null"] }
+        description: { type: [string, "null"] }
+        analysisStatus: { enum: [pending, running, completed, failed] }
+    Timeline:
+      type: object
+      required: [transcript, screens]
+      properties:
+        transcript:
+          type: array
+          items: { $ref: "#/components/schemas/TranscriptEvent" }
+        screens:
+          type: array
+          items: { $ref: "#/components/schemas/ScreenEvent" }
+    SummaryItem:
+      type: object
+      required: [text, evidenceIds]
+      properties:
+        text: { type: string }
+        evidenceIds: { type: array, items: { type: string } }
+        assignee: { type: [string, "null"] }
+        dueAt: { type: [string, "null"], format: date-time }
+    Summary:
+      type: object
+      required: [summary, decisions, actionItems, openQuestions, topics]
+      properties:
+        summary: { type: string }
+        decisions: { type: array, items: { $ref: "#/components/schemas/SummaryItem" } }
+        actionItems: { type: array, items: { $ref: "#/components/schemas/SummaryItem" } }
+        openQuestions: { type: array, items: { $ref: "#/components/schemas/SummaryItem" } }
+        topics: { type: array, items: { type: string } }

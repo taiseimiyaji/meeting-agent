@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/timeline.schema.json",
+  "title": "MeetingTimeline",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "meeting", "transcripts", "screens"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "meeting": { "$ref": "meeting.schema.json" },
+    "transcripts": { "type": "array", "items": { "$ref": "transcript.schema.json" } },
+    "screens": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "meetingId", "startedAtMs", "type", "imagePath", "analysisStatus"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 }, "meetingId": { "type": "string", "minLength": 1 },
+          "startedAtMs": { "type": "integer", "minimum": 0 }, "endedAtMs": { "type": "integer", "minimum": 0 },
+          "type": { "const": "screen_change" }, "imagePath": { "type": "string", "minLength": 1 },
+          "ocr": { "type": "string" }, "description": { "type": "string" },
+          "analysisStatus": { "enum": ["pending", "processing", "completed", "failed"] }
+        }
+      }
+    }
+  }
+}

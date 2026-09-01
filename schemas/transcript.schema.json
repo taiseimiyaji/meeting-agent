@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meeting-agent.local/schemas/transcript.schema.json",
+  "title": "TranscriptEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "meetingId", "revision", "startedAtMs", "type", "speaker", "text", "source", "isFinal", "screenRefs"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "meetingId": { "type": "string", "minLength": 1 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "startedAtMs": { "type": "integer", "minimum": 0 },
+    "endedAtMs": { "type": "integer", "minimum": 0 },
+    "type": { "const": "speech" },
+    "speaker": { "enum": ["self", "remote", "unknown"] },
+    "text": { "type": "string" },
+    "source": { "enum": ["microphone", "system_audio", "imported"] },
+    "isFinal": { "type": "boolean" },
+    "screenRefs": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["screenId", "relation"],
+        "properties": {
+          "screenId": { "type": "string", "minLength": 1 },
+          "relation": { "enum": ["visible_during_speech", "previously_visible", "explicitly_referenced"] },
+          "overlapMs": { "type": "integer", "minimum": 0 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "provider": { "type": "string" }
+        }
+      }
+    }
+  }
+}

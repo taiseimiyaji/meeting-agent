@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  swift:
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - apps/macos
+          - packages/meeting-core
+          - packages/meeting-analysis
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select --switch /Applications/Xcode.app
+      - name: Test ${{ matrix.package }}
+        working-directory: ${{ matrix.package }}
+        run: swift test
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  node-tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Test Codex helper
+        working-directory: packages/codex-helper
+        run: npm test
+      - name: Test evaluation harness
+        working-directory: tools/evaluation
+        run: node --test
