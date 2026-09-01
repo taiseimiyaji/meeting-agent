@@ -90,8 +90,13 @@ private struct ProcessResourceSampler {
     mutating func sample(now: Date = Date()) -> (cpuPercent: Double?, residentMemoryBytes: UInt64)? {
         var usage = rusage_info_v2()
         let status = withUnsafeMutablePointer(to: &usage) { usagePointer in
-            var opaque: rusage_info_t? = UnsafeMutableRawPointer(usagePointer)
-            return proc_pid_rusage(getpid(), RUSAGE_INFO_V2, &opaque)
+            // `rusage_info_t` is imported as `void *`, so Swift exposes the C
+            // buffer parameter as a pointer-to-optional-pointer. Rebind the
+            // storage itself; passing a separate pointer variable would make
+            // libproc overwrite that variable and corrupt the stack.
+            usagePointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                proc_pid_rusage(getpid(), RUSAGE_INFO_V2, $0)
+            }
         }
         guard status == 0 else { return nil }
         let cpuTime = usage.ri_user_time + usage.ri_system_time
