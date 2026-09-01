@@ -94,6 +94,7 @@ struct MeetingPipelineTests {
     @Test("persistent summarize and export handlers produce local artifacts")
     func analysisRuntimeHandlers() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try MeetingStore(path: root.appendingPathComponent("db.sqlite").path)
         let meeting = Meeting(status: .completed)
