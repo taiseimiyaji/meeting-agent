@@ -15,8 +15,8 @@ final class LocalCaptureControllerTests: XCTestCase {
         XCTAssertEqual(fixture.pipeline.startCount, 1)
         XCTAssertEqual(fixture.pipeline.targetWindowID, 42)
         XCTAssertEqual(
-            fixture.builtDirectory?.standardizedFileURL,
-            fixture.evidenceRoot.appendingPathComponent(meetingID).appendingPathComponent("KeyFrames").standardizedFileURL
+            fixture.builtDirectory?.standardizedFileURL.path,
+            fixture.evidenceRoot.appendingPathComponent(meetingID).appendingPathComponent("KeyFrames").standardizedFileURL.path
         )
         let adapterStarts = await fixture.adapter.startCount
         XCTAssertEqual(adapterStarts, 0, "controller must not start the adapter outside the pipeline")
