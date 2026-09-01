@@ -20,6 +20,12 @@ public struct VideoFrameEvent: @unchecked Sendable {
     public let timestamp: CaptureTimestamp
     public let presentationTime: CMTime
     public let pixelBuffer: CVPixelBuffer
+
+    public init(timestamp: CaptureTimestamp, presentationTime: CMTime, pixelBuffer: CVPixelBuffer) {
+        self.timestamp = timestamp
+        self.presentationTime = presentationTime
+        self.pixelBuffer = pixelBuffer
+    }
 }
 
 public struct AudioEvent: @unchecked Sendable {
@@ -28,6 +34,20 @@ public struct AudioEvent: @unchecked Sendable {
     public let presentationTime: CMTime
     public let sampleBuffer: CMSampleBuffer?
     public let pcmBuffer: AVAudioPCMBuffer?
+
+    public init(
+        kind: CaptureOutputKind,
+        timestamp: CaptureTimestamp,
+        presentationTime: CMTime,
+        sampleBuffer: CMSampleBuffer?,
+        pcmBuffer: AVAudioPCMBuffer?
+    ) {
+        self.kind = kind
+        self.timestamp = timestamp
+        self.presentationTime = presentationTime
+        self.sampleBuffer = sampleBuffer
+        self.pcmBuffer = pcmBuffer
+    }
 }
 
 public enum CaptureEvent: @unchecked Sendable {

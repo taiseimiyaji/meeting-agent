@@ -36,7 +36,8 @@ struct MeetingPipelineTests {
         await waitUntil { (try? store.transcript(id: id.uuidString)?.revision) == 2 }
         try await pipeline.stop()
 
-        let transcript = try #require(store.transcript(id: id.uuidString))
+        let storedTranscript = try store.transcript(id: id.uuidString)
+        let transcript = try #require(storedTranscript)
         #expect(transcript.text == "確定")
         #expect(transcript.source == .microphone)
         #expect(transcript.speaker == .self)
@@ -110,7 +111,8 @@ struct MeetingPipelineTests {
         try store.enqueue(MeetingCore.AnalysisJob(meetingId: meeting.id, kind: "summarize"))
         let summarized = try await runtime.processNext()
         #expect(summarized)
-        let summary = try #require(store.activeSummary(meetingId: meeting.id))
+        let activeSummary = try store.activeSummary(meetingId: meeting.id)
+        let summary = try #require(activeSummary)
         #expect(summary.decisions.count == 1)
 
         try store.enqueue(MeetingCore.AnalysisJob(meetingId: meeting.id, kind: "export"))
@@ -163,7 +165,7 @@ private actor FakeCapture: MeetingCaptureAdapter {
     func metricsSnapshot() async -> CaptureMetricsSnapshot { .init() }
 }
 
-private actor FakeTranscriber: Transcriber {
+private actor FakeTranscriber: @preconcurrency Transcriber {
     nonisolated let events: AsyncStream<MeetingCapture.TranscriptEvent>
     private let continuation: AsyncStream<MeetingCapture.TranscriptEvent>.Continuation
     private(set) var consumedCount = 0

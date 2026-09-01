@@ -41,6 +41,18 @@ public struct TranscriberAvailability: Sendable, Equatable {
     public let recognizerAvailable: Bool
     public let onDeviceRecognitionSupported: Bool
 
+    public init(
+        authorization: PermissionState,
+        localeSupported: Bool,
+        recognizerAvailable: Bool,
+        onDeviceRecognitionSupported: Bool
+    ) {
+        self.authorization = authorization
+        self.localeSupported = localeSupported
+        self.recognizerAvailable = recognizerAvailable
+        self.onDeviceRecognitionSupported = onDeviceRecognitionSupported
+    }
+
     public var canTranscribe: Bool {
         authorization == .granted && localeSupported && recognizerAvailable
     }
