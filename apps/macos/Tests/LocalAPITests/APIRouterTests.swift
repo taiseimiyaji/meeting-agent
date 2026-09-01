@@ -13,6 +13,24 @@ final class APIRouterTests: XCTestCase {
         XCTAssertEqual(health.status, 200); XCTAssertEqual(badHost.status, 403)
     }
 
+    func testBundledWebUIAndSPAPathsAreServedWithoutExposingOtherFiles() async throws {
+        let webRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: webRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: webRoot) }
+        try Data("<html>meeting agent</html>".utf8).write(to: webRoot.appendingPathComponent("index.html"))
+        try Data("console.log('ok')".utf8).write(to: webRoot.appendingPathComponent("app.js"))
+        let fixture = try Fixture(credentials: credentials, webRoot: webRoot)
+
+        let index = await fixture.router.route(request(.GET, "/", authenticated: false, origin: nil))
+        let spa = await fixture.router.route(request(.GET, "/meetings/example", authenticated: false, origin: nil))
+        let script = await fixture.router.route(request(.GET, "/app.js", authenticated: false, origin: nil))
+        let traversal = await fixture.router.route(request(.GET, "/../secret", authenticated: false, origin: nil))
+        XCTAssertEqual(index.status, 200)
+        XCTAssertEqual(spa.body, index.body)
+        XCTAssertEqual(script.headers["Content-Type"], "text/javascript; charset=utf-8")
+        XCTAssertEqual(traversal.status, 404)
+    }
+
     func testAuthenticationOriginAndCSRFEnforced() async throws {
         let fixture = try Fixture(credentials: credentials)
         let unauthenticated = await fixture.router.route(request(.GET, "/api/capture", authenticated: false))
@@ -76,11 +94,11 @@ final class APIRouterTests: XCTestCase {
 
 private struct Fixture {
     let store: MeetingStore; let evidenceRoot: URL; let capture = MockCaptureController(); let router: APIRouter
-    init(credentials: APICredentials) throws {
+    init(credentials: APICredentials, webRoot: URL? = nil) throws {
         store = try MeetingStore(path: ":memory:")
         evidenceRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let repository = try LocalMeetingRepository(store: store, evidenceRoot: evidenceRoot)
-        router = APIRouter(repository: repository, capture: capture, security: .init(credentials: credentials))
+        router = APIRouter(repository: repository, capture: capture, security: .init(credentials: credentials), webRoot: webRoot)
     }
 }
 private actor MockCaptureController: CaptureAPIControlling {

@@ -7,12 +7,15 @@ public struct APIRouter: Sendable {
     private let capture: any CaptureAPIControlling
     private let security: APISecurityPolicy
     private let version: String
+    private let webRoot: URL?
     private let publish: @Sendable (APIEvent) async -> Void
 
     public init(repository: any MeetingAPIRepository, capture: any CaptureAPIControlling,
                 security: APISecurityPolicy, version: String = "0.1.0",
+                webRoot: URL? = nil,
                 publish: @escaping @Sendable (APIEvent) async -> Void = { _ in }) {
         self.repository = repository; self.capture = capture; self.security = security; self.version = version
+        self.webRoot = webRoot?.standardizedFileURL
         self.publish = publish
     }
 
@@ -22,7 +25,7 @@ public struct APIRouter: Sendable {
 
         let components = URLComponents(string: request.target)
         let path = components?.path ?? request.target
-        guard path.hasPrefix("/api/") else { return .problem(404, "Route not found") }
+        guard path.hasPrefix("/api/") else { return staticWebResponse(path: path, request: request) }
         let route = String(path.dropFirst(5))
         if route == "health", request.method == .GET {
             return withCORS(.json(200, HealthResponse(status: "ok", version: version)), request: request)
@@ -40,6 +43,33 @@ public struct APIRouter: Sendable {
         } catch {
             return withCORS(.problem(500, error.localizedDescription), request: request)
         }
+    }
+
+    private func staticWebResponse(path: String, request: HTTPRequest) -> HTTPResponse {
+        guard request.method == .GET, let webRoot else { return .problem(404, "Route not found") }
+        let relative = path == "/" ? "index.html" : String(path.drop(while: { $0 == "/" }))
+        guard !relative.contains(".."), !relative.contains("\\") else { return .problem(404, "Route not found") }
+        var candidate = webRoot.appendingPathComponent(relative).standardizedFileURL
+        var isDirectory: ObjCBool = false
+        if !FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory) || isDirectory.boolValue {
+            candidate = webRoot.appendingPathComponent("index.html").standardizedFileURL
+        }
+        let rootPath = webRoot.path.hasSuffix("/") ? webRoot.path : webRoot.path + "/"
+        guard candidate.path.hasPrefix(rootPath), let data = try? Data(contentsOf: candidate) else {
+            return .problem(404, "Web UI is not bundled")
+        }
+        let contentTypes = [
+            "html": "text/html; charset=utf-8", "js": "text/javascript; charset=utf-8",
+            "css": "text/css; charset=utf-8", "json": "application/json; charset=utf-8",
+            "svg": "image/svg+xml", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "ico": "image/x-icon", "woff2": "font/woff2"
+        ]
+        return .init(status: 200, headers: [
+            "Content-Type": contentTypes[candidate.pathExtension.lowercased()] ?? "application/octet-stream",
+            "Cache-Control": candidate.lastPathComponent == "index.html" ? "no-store" : "public, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'self'; connect-src 'self' ws://127.0.0.1:8765 ws://localhost:8765; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+        ], body: data)
     }
 
     private func authenticatedRoute(_ route: String, components: URLComponents?, request: HTTPRequest) async throws -> HTTPResponse {

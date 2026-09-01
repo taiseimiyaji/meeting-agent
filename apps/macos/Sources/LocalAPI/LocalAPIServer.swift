@@ -13,13 +13,14 @@ public final class LocalAPIServer: @unchecked Sendable {
     private var listener: NWListener?
 
     public init(repository: any MeetingAPIRepository, capture: any CaptureAPIControlling,
-                port: UInt16 = 8765, credentials: APICredentials = .init(), allowedOrigins: Set<String>? = nil) {
+                port: UInt16 = 8765, credentials: APICredentials = .init(), allowedOrigins: Set<String>? = nil,
+                webRoot: URL? = nil) {
         self.port = port; self.credentials = credentials
         let hub = WebSocketHub(); self.hub = hub
         let hosts = Set(["127.0.0.1:\(port)", "localhost:\(port)"])
         let policy = APISecurityPolicy(credentials: credentials, allowedHosts: hosts,
                                        allowedOrigins: allowedOrigins ?? ["http://127.0.0.1:\(port)", "http://localhost:\(port)", "http://127.0.0.1:5173", "http://localhost:5173"])
-        router = APIRouter(repository: repository, capture: capture, security: policy,
+        router = APIRouter(repository: repository, capture: capture, security: policy, webRoot: webRoot,
                            publish: { event in
                                guard let data = try? JSONEncoder.api.encode(event),
                                      let text = String(data: data, encoding: .utf8) else { return }

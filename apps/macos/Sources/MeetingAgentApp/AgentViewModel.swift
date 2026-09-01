@@ -107,4 +107,10 @@ final class AgentViewModel: ObservableObject {
         let value = "{\"baseUrl\":\"http://127.0.0.1:8765/api\",\"sessionToken\":\"\(apiCredentials.sessionToken)\",\"csrfToken\":\"\(apiCredentials.csrfToken)\"}"
         NSPasteboard.general.clearContents(); NSPasteboard.general.setString(value, forType: .string)
     }
+
+    func openWebUI() {
+        var components = URLComponents(string: "http://127.0.0.1:8765/")!
+        components.fragment = "sessionToken=\(apiCredentials.sessionToken)&csrfToken=\(apiCredentials.csrfToken)"
+        if let url = components.url { NSWorkspace.shared.open(url) }
+    }
 }

@@ -46,6 +46,7 @@ struct ContentView: View {
                     Text("http://127.0.0.1:8765/api").textSelection(.enabled)
                     Spacer()
                     Text("token …\(model.apiCredentials.sessionToken.suffix(6))").foregroundStyle(.secondary)
+                    Button("Open Web UI") { model.openWebUI() }
                     Button("Copy configuration") { model.copyAPIConfiguration() }
                 }.padding(6)
             }

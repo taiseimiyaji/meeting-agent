@@ -16,7 +16,19 @@ describe("OpenAPI client contract", () => {
     vi.stubEnv("VITE_CSRF_TOKEN", "csrf-secret");
     vi.stubEnv("VITE_API_BASE_URL", "");
   });
-  afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+  afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); history.replaceState(null, "", "/"); });
+
+  it("accepts app launch credentials from a fragment and removes them immediately", async () => {
+    vi.stubEnv("VITE_SESSION_TOKEN", "");
+    vi.stubEnv("VITE_CSRF_TOKEN", "");
+    history.replaceState(null, "", "/#sessionToken=launch-session&csrfToken=launch-csrf");
+    const fetch = vi.fn().mockResolvedValue(response({ status: "idle" }));
+    vi.stubGlobal("fetch", fetch);
+    const { api } = await import("./api");
+    await api.captureStatus();
+    expect(fetch).toHaveBeenCalledWith("/api/capture", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "launch-session" }) }));
+    expect(window.location.hash).toBe("");
+  });
 
   it("unwraps the paginated meeting response and sends apiKey auth", async () => {
     const fetch = vi.fn().mockResolvedValue(response({ items: [{ id: "m1", title: null, startedAt: "2026-09-01T00:00:00Z", status: "completed" }], nextCursor: null }));

@@ -40,6 +40,16 @@ cd tools/evaluation && node --test
 
 The Codex helper and all external providers are optional. Capture, Canonical Evidence, OCR, and local browsing must continue to work when they are unavailable.
 
+## Run the app
+
+```sh
+cd apps/macos
+sh Scripts/build-app.sh
+open .build/app/MeetingAgent.app
+```
+
+Grant Screen Recording, Microphone, and Speech Recognition permissions, select the Chrome window containing Google Meet, and start capture. Use **Open Web UI** to open the bundled timeline UI; its short-lived local credentials are passed in the URL fragment and immediately removed from the address bar. Meeting evidence is stored under `~/Library/Application Support/MeetingAgent`.
+
 ## Data safety
 
 - Local API binds to `127.0.0.1` and still requires a session token, CSRF protection for mutations, and Origin/Host validation.

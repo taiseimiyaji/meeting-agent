@@ -3,8 +3,12 @@ import type { CaptureStatus, Meeting, MeetingDetail, MeetingPage, MeetingSummary
 
 const baseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
 const useMock = import.meta.env.VITE_USE_MOCK_API === "1";
-const token = import.meta.env.VITE_SESSION_TOKEN;
-const csrfToken = import.meta.env.VITE_CSRF_TOKEN;
+const launchParameters = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+const token = import.meta.env.VITE_SESSION_TOKEN || launchParameters.get("sessionToken") || undefined;
+const csrfToken = import.meta.env.VITE_CSRF_TOKEN || launchParameters.get("csrfToken") || undefined;
+if (launchParameters.has("sessionToken") || launchParameters.has("csrfToken")) {
+  history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, {

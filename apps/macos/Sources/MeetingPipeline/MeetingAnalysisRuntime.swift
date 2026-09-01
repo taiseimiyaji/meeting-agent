@@ -39,12 +39,12 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
             guard let timeline = try store.timeline(meetingId: job.meetingId) else {
                 throw MeetingAnalysisRuntimeError.meetingNotFound(job.meetingId)
             }
-            let summary = HeuristicMeetingSummarizer().summarize(timeline)
+            let summary = HierarchicalHeuristicSummarizer().summarize(timeline)
             try store.saveSummary(.init(
                 meetingId: job.meetingId,
                 provider: "local-heuristic",
-                model: "v1",
-                promptVersion: "heuristic-v1",
+                model: "hierarchical-v1",
+                promptVersion: "heuristic-sections-v1",
                 value: summary
             ))
         }

@@ -25,6 +25,20 @@ jobs:
       - name: Test ${{ matrix.package }}
         working-directory: ${{ matrix.package }}
         run: swift test
+      - uses: actions/setup-node@v4
+        if: matrix.package == 'apps/macos'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Build and verify distributable app
+        if: matrix.package == 'apps/macos'
+        working-directory: apps/macos
+        run: |
+          sh Scripts/build-app.sh
+          plutil -lint .build/app/MeetingAgent.app/Contents/Info.plist
+          codesign --verify --deep --strict .build/app/MeetingAgent.app
+          test -f .build/app/MeetingAgent.app/Contents/Resources/Web/index.html
 
   web:
     runs-on: ubuntu-latest

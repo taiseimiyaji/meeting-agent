@@ -41,3 +41,42 @@ public struct HeuristicMeetingSummarizer: Sendable {
             .filter { (2...40).contains($0.count) }
     }
 }
+
+/// Bounded local map/reduce summarizer for long meetings. Each section is
+/// summarized independently, then reduced while preserving evidence IDs.
+public struct HierarchicalHeuristicSummarizer: Sendable {
+    public let planner: SectionPlanner
+
+    public init(planner: SectionPlanner = .init()) { self.planner = planner }
+
+    public func summarize(_ timeline: Timeline) -> MeetingCore.MeetingSummary {
+        let sections = planner.plan(transcript: timeline.transcripts, screens: timeline.screens)
+        guard !sections.isEmpty else { return HeuristicMeetingSummarizer().summarize(timeline) }
+        let partials = sections.map { section -> MeetingCore.MeetingSummary in
+            let transcriptIDs = Set(section.transcriptEventIDs)
+            let screenIDs = Set(section.screenEventIDs)
+            return HeuristicMeetingSummarizer().summarize(.init(
+                meeting: timeline.meeting,
+                transcripts: timeline.transcripts.filter { transcriptIDs.contains($0.id) },
+                screens: timeline.screens.filter { screenIDs.contains($0.id) }
+            ))
+        }
+        return .init(
+            summary: uniqueStrings(partials.map(\.summary).filter { $0 != "確定した文字起こしはありません。" }).joined(separator: " "),
+            decisions: uniqueItems(partials.flatMap(\.decisions)),
+            actionItems: uniqueItems(partials.flatMap(\.actionItems)),
+            openQuestions: uniqueItems(partials.flatMap(\.openQuestions)),
+            topics: uniqueStrings(partials.flatMap(\.topics))
+        )
+    }
+
+    private func uniqueItems(_ values: [MeetingCore.SummaryItem]) -> [MeetingCore.SummaryItem] {
+        var seen = Set<String>()
+        return values.filter { seen.insert($0.text + "\u{0}" + $0.evidenceIds.joined(separator: ",")).inserted }
+    }
+
+    private func uniqueStrings(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.filter { seen.insert($0).inserted }
+    }
+}

@@ -29,7 +29,8 @@ struct MeetingAgentApp: App {
                 do { try await analysisRuntime.start() }
                 catch { AgentEnvironment.logger.error("Analysis worker failed to start: \(error.localizedDescription, privacy: .public)") }
             }
-            let server = LocalAPIServer(repository: repository, capture: controller)
+            let webRoot = Bundle.main.resourceURL?.appendingPathComponent("Web", isDirectory: true)
+            let server = LocalAPIServer(repository: repository, capture: controller, webRoot: webRoot)
             try server.start()
             apiServer = server
             _model = StateObject(wrappedValue: AgentViewModel(capture: controller, apiCredentials: server.credentials))
