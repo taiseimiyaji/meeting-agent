@@ -31,14 +31,19 @@ struct ContentView: View {
             }
 
             GroupBox("Capture target") {
-                Picker("Chrome / Meet window", selection: $model.selectedWindowID) {
+                Picker("Window (Chrome prioritized)", selection: $model.selectedWindowID) {
                     Text("Select a window").tag(nil as UInt32?)
                     ForEach(model.targets) { target in
-                        Text("\(target.applicationName) — \(target.windowTitle)").tag(target.id as UInt32?)
+                        Text("\(target.applicationName.localizedCaseInsensitiveContains("chrome") ? "★ " : "")\(target.applicationName) — \(target.windowTitle)").tag(target.id as UInt32?)
                     }
                 }
                 .disabled(model.isCapturing)
                 .padding(6)
+                Text("Meet以外でも、画面上に表示されている任意のアプリウィンドウを収録できます。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.bottom, 6)
             }
 
             GroupBox("Local API") {

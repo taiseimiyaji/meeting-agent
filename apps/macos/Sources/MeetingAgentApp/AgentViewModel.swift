@@ -35,16 +35,29 @@ final class AgentViewModel: ObservableObject {
         permissions = await permissionProvider.current()
         guard permissions.screenRecording == .granted else { return }
         do {
-            targets = try await capture.availableTargets()
-            if selectedWindowID == nil {
-                selectedWindowID = targets.first(where: {
-                    $0.applicationName.localizedCaseInsensitiveContains("Chrome")
-                })?.id
+            targets = try await capture.availableTargets().sorted(by: Self.preferredTargetOrder)
+            if selectedWindowID == nil || !targets.contains(where: { $0.id == selectedWindowID }) {
+                selectedWindowID = targets.first?.id
             }
         } catch {
             errorMessage = error.localizedDescription
             AgentEnvironment.logger.error("Failed to enumerate capture targets: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    nonisolated static func preferredTargetOrder(_ lhs: CaptureTarget, _ rhs: CaptureTarget) -> Bool {
+        func rank(_ target: CaptureTarget) -> Int {
+            let name = target.applicationName.lowercased()
+            if name == "google chrome" { return 0 }
+            if name.contains("chrome") || name.contains("chromium") { return 1 }
+            return 2
+        }
+        let lhsRank = rank(lhs), rhsRank = rank(rhs)
+        if lhsRank != rhsRank { return lhsRank < rhsRank }
+        if lhs.applicationName != rhs.applicationName {
+            return lhs.applicationName.localizedStandardCompare(rhs.applicationName) == .orderedAscending
+        }
+        return lhs.windowTitle.localizedStandardCompare(rhs.windowTitle) == .orderedAscending
     }
 
     func requestScreenPermission() async {
