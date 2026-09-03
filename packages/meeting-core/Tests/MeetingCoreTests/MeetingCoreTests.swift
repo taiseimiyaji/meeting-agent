@@ -61,6 +61,7 @@ final class MeetingCoreTests: XCTestCase {
         let store = try MeetingStore(path: ":memory:")
         try store.save(Meeting(id: "m"))
         XCTAssertTrue(try store.enqueueIfNeeded(AnalysisJob(id: "first", meetingId: "m", kind: "summarize")))
+        XCTAssertEqual(try store.latestAnalysisJob(meetingId: "m", kind: "summarize")?.id, "first")
         XCTAssertFalse(try store.enqueueIfNeeded(AnalysisJob(id: "duplicate", meetingId: "m", kind: "summarize")))
         _ = try store.claimNextAnalysisJob()
         try store.completeAnalysisJob(id: "first")

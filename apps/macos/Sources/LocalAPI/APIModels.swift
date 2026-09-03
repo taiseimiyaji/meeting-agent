@@ -3,6 +3,21 @@ import MeetingCore
 
 public struct HealthResponse: Codable, Sendable { public let status: String; public let version: String }
 
+public enum SummaryProgressState: String, Codable, Sendable {
+    case notStarted = "not_started"
+    case queued, running, retrying, completed, failed
+}
+
+public struct SummaryProgressResponse: Codable, Sendable, Equatable {
+    public let state: SummaryProgressState
+    public let retryCount: Int
+    public let error: String?
+    public let availableAt: Date?
+    public init(state: SummaryProgressState, retryCount: Int = 0, error: String? = nil, availableAt: Date? = nil) {
+        self.state = state; self.retryCount = retryCount; self.error = error; self.availableAt = availableAt
+    }
+}
+
 public enum APICaptureStatus: String, Codable, Sendable { case idle, starting, capturing, stopping, failed }
 
 public struct APICaptureSnapshot: Codable, Sendable, Equatable {

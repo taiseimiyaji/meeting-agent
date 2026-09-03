@@ -8,6 +8,7 @@ public protocol MeetingAPIRepository: Sendable {
     func meeting(id: String) throws -> Meeting?
     func timeline(meetingId: String) throws -> Timeline?
     func summary(meetingId: String) throws -> MeetingSummary?
+    func summaryProgress(meetingId: String) throws -> SummaryProgressResponse
     func enqueue(meetingId: String, kind: String) throws
     func screenImage(id: String) throws -> APIImage?
 }
@@ -32,6 +33,21 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
     public func meeting(id: String) throws -> Meeting? { try store.meeting(id: id) }
     public func timeline(meetingId: String) throws -> Timeline? { try store.timeline(meetingId: meetingId) }
     public func summary(meetingId: String) throws -> MeetingSummary? { try store.activeSummary(meetingId: meetingId) }
+    public func summaryProgress(meetingId: String) throws -> SummaryProgressResponse {
+        let hasSummary = try store.activeSummary(meetingId: meetingId) != nil
+        let job = try store.latestAnalysisJob(meetingId: meetingId, kind: "summarize")
+        let state: SummaryProgressState
+        if hasSummary { state = .completed }
+        else if let job {
+            switch job.status {
+            case .pending: state = job.retryCount > 0 ? .retrying : .queued
+            case .processing: state = .running
+            case .completed: state = .completed
+            case .failed: state = .failed
+            }
+        } else { state = .notStarted }
+        return .init(state: state, retryCount: job?.retryCount ?? 0, error: job?.error, availableAt: job?.availableAt)
+    }
     public func enqueue(meetingId: String, kind: String) throws {
         _ = try store.enqueueIfNeeded(AnalysisJob(meetingId: meetingId, kind: kind, priority: kind == "summarize" ? 2 : 1))
     }

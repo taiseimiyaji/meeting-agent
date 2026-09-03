@@ -219,6 +219,16 @@ public final class MeetingStore: @unchecked Sendable {
         return job
     }
 
+    public func latestAnalysisJob(meetingId: String, kind: String) throws -> AnalysisJob? {
+        var job: AnalysisJob?
+        try query("""
+            SELECT id,meeting_id,kind,status,retry_count,error,priority,available_at
+            FROM analysis_jobs WHERE meeting_id=? AND kind=?
+            ORDER BY updated_at DESC,created_at DESC LIMIT 1
+            """, [.text(meetingId), .text(kind)]) { job = try decodeJob($0) }
+        return job
+    }
+
     /// Called at launch. Capture sessions and in-flight analysis did not survive
     /// process termination, so they become explicitly recoverable states.
     @discardableResult public func recoverInterruptedWork() throws -> RecoveryReport {

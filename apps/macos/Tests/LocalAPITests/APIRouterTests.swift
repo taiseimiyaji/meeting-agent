@@ -53,6 +53,15 @@ final class APIRouterTests: XCTestCase {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: timeline.body) as? [String: Any])
         XCTAssertEqual((json["transcript"] as? [Any])?.count, 1); XCTAssertNotNil(json["screens"])
         let summary = await fixture.router.route(request(.GET, "/api/meetings/\(id)/summary")); XCTAssertEqual(summary.status, 404)
+        let progress = await fixture.router.route(request(.GET, "/api/meetings/\(id)/summary/status"))
+        XCTAssertEqual(progress.status, 200)
+        let progressJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: progress.body) as? [String: Any])
+        XCTAssertEqual(progressJSON["state"] as? String, "not_started")
+        try fixture.store.enqueue(AnalysisJob(id: "summary-job", meetingId: id, kind: "summarize", status: .processing, retryCount: 1))
+        let running = await fixture.router.route(request(.GET, "/api/meetings/\(id)/summary/status"))
+        let runningJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: running.body) as? [String: Any])
+        XCTAssertEqual(runningJSON["state"] as? String, "running")
+        XCTAssertEqual(runningJSON["retryCount"] as? Int, 1)
     }
 
     func testWebSocketContractAndReconnectDoNotChangeCapture() async throws {

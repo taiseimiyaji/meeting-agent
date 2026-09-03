@@ -106,6 +106,17 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Summary" }
+        "404": { description: Summary has not been generated }
+  /meetings/{meetingId}/summary/status:
+    get:
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+      responses:
+        "200":
+          description: Durable summary job progress
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SummaryProgress" }
   /meetings/{meetingId}/summarize:
     post:
       parameters:
@@ -256,3 +267,11 @@ components:
         actionItems: { type: array, items: { $ref: "#/components/schemas/SummaryItem" } }
         openQuestions: { type: array, items: { $ref: "#/components/schemas/SummaryItem" } }
         topics: { type: array, items: { type: string } }
+    SummaryProgress:
+      type: object
+      required: [state, retryCount]
+      properties:
+        state: { enum: [not_started, queued, running, retrying, completed, failed] }
+        retryCount: { type: integer, minimum: 0 }
+        error: { type: [string, "null"] }
+        availableAt: { type: [string, "null"], format: date-time }

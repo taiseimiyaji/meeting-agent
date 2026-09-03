@@ -16,7 +16,7 @@ describe("OpenAPI client contract", () => {
     vi.stubEnv("VITE_CSRF_TOKEN", "csrf-secret");
     vi.stubEnv("VITE_API_BASE_URL", "");
   });
-  afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); history.replaceState(null, "", "/"); });
+  afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); history.replaceState(null, "", "/"); sessionStorage.clear(); });
 
   it("accepts app launch credentials from a fragment and removes them immediately", async () => {
     vi.stubEnv("VITE_SESSION_TOKEN", "");
@@ -28,6 +28,19 @@ describe("OpenAPI client contract", () => {
     await api.captureStatus();
     expect(fetch).toHaveBeenCalledWith("/api/capture", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "launch-session" }) }));
     expect(window.location.hash).toBe("");
+    expect(sessionStorage.getItem("meeting-agent.session-token")).toBe("launch-session");
+  });
+
+  it("restores app credentials after a same-tab reload", async () => {
+    vi.stubEnv("VITE_SESSION_TOKEN", "");
+    vi.stubEnv("VITE_CSRF_TOKEN", "");
+    sessionStorage.setItem("meeting-agent.session-token", "restored-session");
+    sessionStorage.setItem("meeting-agent.csrf-token", "restored-csrf");
+    const fetch = vi.fn().mockResolvedValue(response({ status: "idle" }));
+    vi.stubGlobal("fetch", fetch);
+    const { api } = await import("./api");
+    await api.captureStatus();
+    expect(fetch).toHaveBeenCalledWith("/api/capture", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "restored-session" }) }));
   });
 
   it("unwraps the paginated meeting response and sends apiKey auth", async () => {
@@ -78,6 +91,15 @@ describe("OpenAPI client contract", () => {
     await expect(api.summary("m1")).resolves.toBeNull();
     await expect(api.summarize("m1")).resolves.toBeUndefined();
     expect(fetch).toHaveBeenNthCalledWith(2, "/api/meetings/m1/summarize", expect.objectContaining({ method: "POST", headers: expect.objectContaining({ Authorization: "session-secret", "X-CSRF-Token": "csrf-secret" }) }));
+  });
+
+  it("reads concrete summary job progress", async () => {
+    const progress = { state: "retrying", retryCount: 2, error: "temporary", availableAt: "2026-09-03T00:00:00Z" };
+    const fetch = vi.fn().mockResolvedValue(response(progress));
+    vi.stubGlobal("fetch", fetch);
+    const { api } = await import("./api");
+    await expect(api.summaryProgress("m1")).resolves.toEqual(progress);
+    expect(fetch).toHaveBeenCalledWith("/api/meetings/m1/summary/status", expect.anything());
   });
 
   it("authenticates WebSocket with subprotocols without leaking token in the URL", async () => {

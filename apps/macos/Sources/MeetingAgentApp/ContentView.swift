@@ -27,6 +27,12 @@ struct ContentView: View {
                     permissionRow("Speech Recognition", state: model.permissions.speechRecognition) {
                         Task { await model.requestSpeechPermission() }
                     } settings: { model.openPrivacySettings("SpeechRecognition") }
+                    if [model.permissions.screenRecording, model.permissions.microphone, model.permissions.speechRecognition].contains(.denied) {
+                        Text("再ビルド後に拒否へ変わった場合は、アプリを終了してリポジトリ直下で `make reset-permissions` を実行してください。権限確認が再表示されます。")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                    }
                 }.padding(6)
             }
 

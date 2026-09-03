@@ -1,11 +1,15 @@
 import * as mock from "./mock";
-import type { CaptureStatus, Meeting, MeetingDetail, MeetingPage, MeetingSummary, ScreenEvent, ServerEvent, Settings, Timeline, TranscriptEvent } from "./types";
+import type { CaptureStatus, Meeting, MeetingDetail, MeetingPage, MeetingSummary, ScreenEvent, ServerEvent, Settings, SummaryProgress, Timeline, TranscriptEvent } from "./types";
 
 const baseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
 const useMock = import.meta.env.VITE_USE_MOCK_API === "1";
 const launchParameters = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-const token = import.meta.env.VITE_SESSION_TOKEN || launchParameters.get("sessionToken") || undefined;
-const csrfToken = import.meta.env.VITE_CSRF_TOKEN || launchParameters.get("csrfToken") || undefined;
+const launchedToken = launchParameters.get("sessionToken");
+const launchedCSRFToken = launchParameters.get("csrfToken");
+if (launchedToken) sessionStorage.setItem("meeting-agent.session-token", launchedToken);
+if (launchedCSRFToken) sessionStorage.setItem("meeting-agent.csrf-token", launchedCSRFToken);
+const token = import.meta.env.VITE_SESSION_TOKEN || launchedToken || sessionStorage.getItem("meeting-agent.session-token") || undefined;
+const csrfToken = import.meta.env.VITE_CSRF_TOKEN || launchedCSRFToken || sessionStorage.getItem("meeting-agent.csrf-token") || undefined;
 if (launchParameters.has("sessionToken") || launchParameters.has("csrfToken")) {
   history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
 }
@@ -21,6 +25,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 class APIError extends Error {
   constructor(public readonly status: number, message: string) { super(message); }
+}
+
+export function isAuthenticationError(error: unknown): boolean {
+  return error instanceof APIError && error.status === 401;
 }
 async function requestBlob(path: string): Promise<Blob> {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -48,6 +56,10 @@ export const api = {
       catch (error) { if (error instanceof APIError && error.status === 404) return null; throw error; }
     }
     await pause(); return mock.summaries[id] ?? null;
+  },
+  async summaryProgress(id: string): Promise<SummaryProgress> {
+    if (!useMock) return request(`/api/meetings/${id}/summary/status`);
+    return { state: mock.summaries[id] ? "completed" : "not_started", retryCount: 0 };
   },
   async summarize(id: string): Promise<void> {
     if (!useMock) await request<void>(`/api/meetings/${id}/summarize`, { method: "POST", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {} });

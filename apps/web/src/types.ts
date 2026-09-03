@@ -54,6 +54,12 @@ export interface MeetingSummary {
   openQuestions: SummaryItem[];
   topics: string[];
 }
+export interface SummaryProgress {
+  state: "not_started" | "queued" | "running" | "retrying" | "completed" | "failed";
+  retryCount: number;
+  error?: string | null;
+  availableAt?: string | null;
+}
 export type MeetingDetail = Meeting;
 export interface MeetingPage { items: Meeting[]; nextCursor?: string | null; }
 export interface Timeline { transcript: TranscriptEvent[]; screens: ScreenEvent[]; }

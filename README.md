@@ -50,6 +50,20 @@ open .build/app/MeetingAgent.app
 
 Grant Screen Recording, Microphone, and Speech Recognition permissions, select the Chrome window containing Google Meet, and start capture. Use **Open Web UI** to open the bundled timeline UI; its short-lived local credentials are passed in the URL fragment and immediately removed from the address bar. Meeting evidence is stored under `~/Library/Application Support/MeetingAgent`.
 
+During development, rebuild and relaunch with one command from the repository root:
+
+```sh
+make dev
+```
+
+The script stops the old process before replacing its executable and prefers a stable Apple Development signing identity when one is installed. When only ad-hoc signing is available, `make dev` automatically resets the app's development permissions after rebuilding so macOS asks again instead of leaving stale denied entries. You can also force the reset with:
+
+```sh
+make reset-permissions
+```
+
+The Web UI keeps local API credentials in tab-scoped `sessionStorage`, so an ordinary reload remains signed in. Closing the tab clears them; after restarting the native app, use **Open Web UI** again because a new session is issued.
+
 ## Data safety
 
 - Local API binds to `127.0.0.1` and still requires a session token, CSRF protection for mutations, and Origin/Host validation.

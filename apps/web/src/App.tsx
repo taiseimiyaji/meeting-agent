@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, subscribe } from "./api";
+import { api, isAuthenticationError, subscribe } from "./api";
 import type { MeetingStatus, ScreenEvent, ServerEvent, Settings, TranscriptEvent } from "./types";
 
 type Page = "home" | "meetings" | "detail" | "settings";
@@ -11,7 +11,7 @@ const date = (value: string) => new Intl.DateTimeFormat("ja-JP", { month: "short
 
 function StatusBadge({ status }: { status: MeetingStatus }) { return <span className={`badge ${status}`}>{labels[status]}</span>; }
 function Empty({ children }: { children: React.ReactNode }) { return <div className="empty">{children}</div>; }
-function ErrorBox({ error }: { error: Error }) { return <div className="error-box"><strong>読み込みに失敗しました</strong><span>{error.message}</span></div>; }
+function ErrorBox({ error }: { error: Error }) { return <div className="error-box"><strong>{isAuthenticationError(error) ? "セッションの有効期限が切れました" : "読み込みに失敗しました"}</strong><span>{isAuthenticationError(error) ? "Meeting Agentアプリの「Open Web UI」から開き直してください。" : error.message}</span></div>; }
 
 export function App() {
   const client = useQueryClient();
@@ -89,15 +89,22 @@ function MeetingDetail({ id, back }: { id: string; back: () => void }) {
     queryKey: ["meeting", id, "summary"], queryFn: () => api.summary(id), enabled: tab === "summary",
     retry: 1, refetchInterval: (query) => query.state.data == null ? 2_000 : false,
   });
+  const summaryProgress = useQuery({
+    queryKey: ["meeting", id, "summary-progress"], queryFn: () => api.summaryProgress(id), enabled: tab === "summary",
+    refetchInterval: (query) => ["completed", "failed"].includes(query.state.data?.state ?? "") ? false : 1_000,
+  });
   const summarize = useMutation({
     mutationFn: () => api.summarize(id),
-    onSuccess: () => void client.invalidateQueries({ queryKey: ["meeting", id, "summary"] }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["meeting", id, "summary"] });
+      void client.invalidateQueries({ queryKey: ["meeting", id, "summary-progress"] });
+    },
   });
   if (meeting.error) return <ErrorBox error={meeting.error}/>;
   return <><button className="back" onClick={back}>← ミーティング一覧</button><header className="detail-header"><div>{meeting.data && <StatusBadge status={meeting.data.status}/>}<h1>{meeting.data?.title ?? "読み込み中…"}</h1><p>{meeting.data ? date(meeting.data.startedAt) : ""} · {meeting.data ? formatTime(duration(meeting.data.startedAt, meeting.data.endedAt)) : ""}</p></div></header>
     {meeting.data && ["interrupted", "failed", "partially_completed"].includes(meeting.data.status) && <div className="evidence-warning"><strong>一部の処理が完了していません</strong><span>取得済みのTranscriptとScreen Evidenceは引き続き閲覧できます。</span></div>}
     <div className="tabs"><button className={tab === "timeline" ? "active" : ""} onClick={() => setTab("timeline")}>Timeline</button><button className={tab === "summary" ? "active" : ""} onClick={() => setTab("summary")}>Summary</button></div>
-    {tab === "timeline" ? <div className="timeline-layout"><TranscriptPanel items={transcript.data ?? []} loading={transcript.isLoading} focus={focusTranscript} onScreen={(screenId) => { setFocusScreen(screenId); document.getElementById(`screen-${screenId}`)?.scrollIntoView({ behavior: "smooth" }); }}/><ScreensPanel items={screens.data ?? []} loading={screens.isLoading} focus={focusScreen} onTranscript={(screenId) => { const hit = transcript.data?.find((t) => t.screenRefs.some((ref) => ref.screenId === screenId)); if (hit) { setFocusTranscript(hit.id); document.getElementById(`transcript-${hit.id}`)?.scrollIntoView({ behavior: "smooth" }); } }}/></div> : <SummaryPanel value={summary.data} loading={summary.isLoading} error={summary.error ?? summarize.error} generating={summarize.isPending} onGenerate={() => summarize.mutate()}/>}</>;
+    {tab === "timeline" ? <div className="timeline-layout"><TranscriptPanel items={transcript.data ?? []} loading={transcript.isLoading} focus={focusTranscript} onScreen={(screenId) => { setFocusScreen(screenId); document.getElementById(`screen-${screenId}`)?.scrollIntoView({ behavior: "smooth" }); }}/><ScreensPanel items={screens.data ?? []} loading={screens.isLoading} focus={focusScreen} onTranscript={(screenId) => { const hit = transcript.data?.find((t) => t.screenRefs.some((ref) => ref.screenId === screenId)); if (hit) { setFocusTranscript(hit.id); document.getElementById(`transcript-${hit.id}`)?.scrollIntoView({ behavior: "smooth" }); } }}/></div> : <SummaryPanel value={summary.data} progress={summaryProgress.data} loading={summary.isLoading || summaryProgress.isLoading} error={summary.error ?? summaryProgress.error ?? summarize.error} generating={summarize.isPending} onGenerate={() => summarize.mutate()}/>}</>;
 }
 
 function TranscriptPanel({ items, loading, focus, onScreen }: { items: TranscriptEvent[]; loading: boolean; focus?: string; onScreen: (id: string) => void }) {
@@ -115,10 +122,14 @@ function AuthenticatedImage({ path, alt }: { path: string; alt: string }) {
   if (image.isError || !objectUrl) return <div className="screen-image-state error">画像を表示できません</div>;
   return <img src={objectUrl} alt={alt}/>;
 }
-function SummaryPanel({ value, loading, error, generating, onGenerate }: { value: Awaited<ReturnType<typeof api.summary>> | undefined; loading: boolean; error: Error | null; generating: boolean; onGenerate: () => void }) {
+function SummaryPanel({ value, progress, loading, error, generating, onGenerate }: { value: Awaited<ReturnType<typeof api.summary>> | undefined; progress: Awaited<ReturnType<typeof api.summaryProgress>> | undefined; loading: boolean; error: Error | null; generating: boolean; onGenerate: () => void }) {
   if (loading) return <Empty>要約を確認しています…</Empty>;
   if (error) return <div className="error-box"><strong>要約の取得に失敗しました</strong><span>{error.message}</span><button className="primary" onClick={onGenerate} disabled={generating}>{generating ? "再生成を依頼中…" : "要約を再生成"}</button></div>;
-  if (!value) return <div className="empty"><span>要約をバックグラウンドで生成しています。</span><button className="primary" onClick={onGenerate} disabled={generating}>{generating ? "生成を依頼中…" : "今すぐ要約を生成"}</button></div>;
+  if (!value) {
+    const messages = { not_started: "要約はまだ開始されていません。", queued: "要約は処理待ちです。", running: "文字起こしと画面情報から要約を生成しています。", retrying: `一時的な失敗のため再試行を待っています（${progress?.retryCount ?? 0}回）。`, completed: "要約結果を読み込んでいます。", failed: "要約の生成に失敗しました。" };
+    const state = progress?.state ?? "not_started";
+    return <div className={`summary-progress ${state}`}><span className="progress-dot"/><strong>{messages[state]}</strong>{progress?.error && <small>{progress.error}</small>}{["not_started", "failed"].includes(state) && <button className="primary" onClick={onGenerate} disabled={generating}>{generating ? "生成を依頼中…" : state === "failed" ? "要約を再生成" : "今すぐ要約を生成"}</button>}</div>;
+  }
   return <div className="summary"><section><p className="eyebrow">OVERVIEW</p><h2>要約</h2><p className="summary-copy">{value.summary}</p><div className="topics">{value.topics.map((topic) => <span key={topic}>{topic}</span>)}</div></section><div className="summary-columns"><SummaryList title="決定事項" marker="✓" items={value.decisions}/><SummaryList title="未決事項" marker="?" items={value.openQuestions}/><section><h2>Action Items</h2>{value.actionItems.map((item) => <div className="action" key={item.text}><span>→</span><div><b>{item.text}</b><small>{item.assignee ?? "担当者未定"}{item.dueAt ? ` · ${date(item.dueAt)}` : ""}</small></div></div>)}</section></div></div>;
 }
 function SummaryList({ title, marker, items }: { title: string; marker: string; items: { text: string }[] }) { return <section><h2>{title}</h2>{items.map((item) => <div className="summary-item" key={item.text}><span>{marker}</span>{item.text}</div>)}</section>; }
