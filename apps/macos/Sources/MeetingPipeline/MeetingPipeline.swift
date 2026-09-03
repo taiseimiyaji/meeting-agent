@@ -21,19 +21,22 @@ public struct MeetingPipelineConfiguration: Sendable {
     public var changedPixelRatioThreshold: Double
     public var meanDifferenceThreshold: Double
     public var stabilityMs: Int64
+    public var transcriptionFinalizationGraceMs: Int64
 
     public init(
         keyFrameDirectory: URL,
         minimumFrameIntervalMs: Int64 = 200,
         changedPixelRatioThreshold: Double = 0.08,
         meanDifferenceThreshold: Double = 0.035,
-        stabilityMs: Int64 = 500
+        stabilityMs: Int64 = 500,
+        transcriptionFinalizationGraceMs: Int64 = 1_000
     ) {
         self.keyFrameDirectory = keyFrameDirectory
         self.minimumFrameIntervalMs = minimumFrameIntervalMs
         self.changedPixelRatioThreshold = changedPixelRatioThreshold
         self.meanDifferenceThreshold = meanDifferenceThreshold
         self.stabilityMs = stabilityMs
+        self.transcriptionFinalizationGraceMs = max(0, transcriptionFinalizationGraceMs)
     }
 }
 
@@ -46,6 +49,7 @@ public actor MeetingPipeline {
     private let microphoneTranscriber: any Transcriber
     private let frameProcessor: KeyFrameProcessor
     private let ocr: VisionTextRecognizer
+    private let transcriptionFinalizationGraceMs: Int64
 
     private var meeting: Meeting?
     private var eventTask: Task<Void, Never>?
@@ -68,6 +72,7 @@ public actor MeetingPipeline {
         self.microphoneTranscriber = microphoneTranscriber
         frameProcessor = try KeyFrameProcessor(configuration: configuration)
         ocr = VisionTextRecognizer()
+        transcriptionFinalizationGraceMs = configuration.transcriptionFinalizationGraceMs
     }
 
     public var meetingID: String? { meeting?.id }
@@ -111,6 +116,7 @@ public actor MeetingPipeline {
         await systemTranscriber.stop()
         await microphoneTranscriber.stop()
         await drainConsumers()
+        _ = try store.finalizePartialTranscripts(meetingId: value.id)
 
         if var screen = activeScreen {
             screen.timeRange.endedAtMs = max(screen.timeRange.startedAtMs, elapsedMs(for: value))
@@ -236,9 +242,11 @@ public actor MeetingPipeline {
         eventTask?.cancel()
         _ = await eventTask?.result
         eventTask = nil
-        // Speech emits its final result asynchronously after endAudio(). Give the
-        // streams one scheduler turn before cancelling their long-lived readers.
-        await Task.yield()
+        // Speech emits its final result asynchronously after endAudio(). Keep
+        // readers alive briefly; otherwise short captures commonly lose it.
+        if transcriptionFinalizationGraceMs > 0 {
+            try? await Task.sleep(for: .milliseconds(transcriptionFinalizationGraceMs))
+        } else { await Task.yield() }
         transcriptTasks.forEach { $0.cancel() }
         for task in transcriptTasks { _ = await task.result }
         transcriptTasks.removeAll()

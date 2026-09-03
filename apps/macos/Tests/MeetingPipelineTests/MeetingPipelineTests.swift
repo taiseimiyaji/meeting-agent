@@ -21,7 +21,7 @@ struct MeetingPipelineTests {
         let pipeline = try MeetingPipeline(
             capture: capture,
             store: store,
-            configuration: .init(keyFrameDirectory: directory.appendingPathComponent("frames")),
+            configuration: .init(keyFrameDirectory: directory.appendingPathComponent("frames"), transcriptionFinalizationGraceMs: 0),
             systemTranscriber: system,
             microphoneTranscriber: microphone
         )
@@ -33,7 +33,11 @@ struct MeetingPipelineTests {
                                     text: "途中", startedAtMs: 10, endedAtMs: 30, isFinal: false))
         await microphone.emit(.init(utteranceID: id, revision: 2, track: .localMicrophone,
                                     text: "確定", startedAtMs: 10, endedAtMs: 50, isFinal: true))
+        let partialID = UUID()
+        await system.emit(.init(utteranceID: partialID, revision: 1, track: .remoteSystemAudio,
+                                text: "終了時の部分結果", startedAtMs: 20, endedAtMs: 60, isFinal: false))
         await waitUntil { (try? store.transcript(id: id.uuidString)?.revision) == 2 }
+        await waitUntil { (try? store.transcript(id: partialID.uuidString)?.revision) == 1 }
         try await pipeline.stop()
 
         let storedTranscript = try store.transcript(id: id.uuidString)
@@ -42,6 +46,7 @@ struct MeetingPipelineTests {
         #expect(transcript.source == .microphone)
         #expect(transcript.speaker == .self)
         #expect(transcript.isFinal)
+        #expect(try store.transcript(id: partialID.uuidString)?.isFinal == true)
         #expect(try store.meeting(id: meeting.id)?.status == .completed)
         #expect(try store.pendingAnalysisJobCount() == 1)
         #expect(await system.consumedCount == 0)
@@ -57,7 +62,7 @@ struct MeetingPipelineTests {
         let system = FakeTranscriber()
         let microphone = FakeTranscriber()
         let pipeline = try MeetingPipeline(capture: capture, store: store,
-            configuration: .init(keyFrameDirectory: directory.appendingPathComponent("frames")),
+            configuration: .init(keyFrameDirectory: directory.appendingPathComponent("frames"), transcriptionFinalizationGraceMs: 0),
             systemTranscriber: system, microphoneTranscriber: microphone)
         let meeting = Meeting()
 

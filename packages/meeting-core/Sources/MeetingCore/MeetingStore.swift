@@ -114,6 +114,15 @@ public final class MeetingStore: @unchecked Sendable {
         }
     }
 
+    /// At capture finalization, the newest partial revision is the best durable
+    /// evidence available when Speech did not emit its final callback in time.
+    @discardableResult public func finalizePartialTranscripts(meetingId: String) throws -> Int {
+        try changeCount(
+            "UPDATE transcript_events SET is_final=1,updated_at=? WHERE meeting_id=? AND is_final=0 AND length(trim(text))>0",
+            [.text(Self.date(Date())), .text(meetingId)]
+        )
+    }
+
     public func save(_ screen: ScreenEvent) throws {
         let now = Self.date(Date())
         try run("""

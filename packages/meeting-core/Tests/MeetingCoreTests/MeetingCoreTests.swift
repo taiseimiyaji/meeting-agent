@@ -67,4 +67,15 @@ final class MeetingCoreTests: XCTestCase {
         try store.completeAnalysisJob(id: "first")
         XCTAssertTrue(try store.enqueueIfNeeded(AnalysisJob(id: "rerun", meetingId: "m", kind: "summarize")))
     }
+
+    func testFinalizesLatestPartialTranscriptAtMeetingEnd() throws {
+        let store = try MeetingStore(path: ":memory:")
+        try store.save(Meeting(id: "m"))
+        try store.save(TranscriptEvent(id: "partial", meetingId: "m", revision: 3,
+                                       timeRange: .init(startedAtMs: 10, endedAtMs: 20),
+                                       text: "latest partial", source: .microphone, isFinal: false))
+        XCTAssertEqual(try store.finalizePartialTranscripts(meetingId: "m"), 1)
+        XCTAssertEqual(try store.transcript(id: "partial")?.revision, 3)
+        XCTAssertEqual(try store.transcript(id: "partial")?.isFinal, true)
+    }
 }
