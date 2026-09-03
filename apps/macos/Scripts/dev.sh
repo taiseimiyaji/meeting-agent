@@ -18,6 +18,10 @@ pkill -x MeetingAgent 2>/dev/null || true
 
 sh "$script_dir/build-app.sh"
 app="$package_dir/.build/app/MeetingAgent.app"
+launch_services_register="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -x "$launch_services_register" ]; then
+  "$launch_services_register" -f "$app"
+fi
 
 if codesign -dvv "$app" 2>&1 | grep -q '^Signature=adhoc$'; then
   reset_permissions=true
