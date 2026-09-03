@@ -43,6 +43,7 @@ struct MeetingPipelineTests {
         #expect(transcript.speaker == .self)
         #expect(transcript.isFinal)
         #expect(try store.meeting(id: meeting.id)?.status == .completed)
+        #expect(try store.pendingAnalysisJobCount() == 1)
         #expect(await system.consumedCount == 0)
     }
 
@@ -123,6 +124,22 @@ struct MeetingPipelineTests {
         #expect(FileManager.default.fileExists(atPath: export.appendingPathComponent("transcript.md").path))
         #expect(FileManager.default.fileExists(atPath: export.appendingPathComponent("timeline.json").path))
         #expect(FileManager.default.fileExists(atPath: export.appendingPathComponent("summary.md").path))
+    }
+
+    @Test("startup backfills summaries for meetings created by older builds")
+    func summaryBackfill() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try MeetingStore(path: root.appendingPathComponent("db.sqlite").path)
+        try store.save(Meeting(id: "old-completed", status: .completed))
+        try store.save(Meeting(id: "old-partial", status: .partiallyCompleted))
+        try store.save(Meeting(id: "still-capturing", status: .capturing))
+        let runtime = try MeetingAnalysisRuntime(store: store, evidenceRoot: root.appendingPathComponent("Meetings"))
+
+        #expect(try runtime.enqueueMissingSummaries() == 2)
+        #expect(try runtime.enqueueMissingSummaries() == 0)
+        #expect(try store.pendingAnalysisJobCount() == 2)
     }
 
     private func waitUntil(_ condition: @escaping @Sendable () -> Bool) async {

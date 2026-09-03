@@ -122,6 +122,7 @@ public actor MeetingPipeline {
         value.endedAt = Date()
         value.status = stopError == nil ? .completed : .partiallyCompleted
         try store.save(value)
+        _ = try store.enqueueIfNeeded(AnalysisJob(meetingId: value.id, kind: "summarize", priority: 2))
         meeting = nil
         await frameProcessor.reset()
         systemAudioOriginMs = nil

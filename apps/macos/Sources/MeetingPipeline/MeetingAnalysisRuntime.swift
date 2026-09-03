@@ -30,7 +30,20 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
 
     public func start() async throws {
         await configureHandlers()
+        try enqueueMissingSummaries()
         try await worker.start()
+    }
+
+    /// Repairs meetings created by older builds that completed without a
+    /// summarize job. Safe to call repeatedly because active jobs are deduped.
+    @discardableResult public func enqueueMissingSummaries() throws -> Int {
+        var count = 0
+        for meeting in try store.meetings(limit: 10_000) {
+            guard [.completed, .partiallyCompleted, .interrupted].contains(meeting.status),
+                  try store.activeSummary(meetingId: meeting.id) == nil else { continue }
+            if try store.enqueueIfNeeded(.init(meetingId: meeting.id, kind: "summarize", priority: 2)) { count += 1 }
+        }
+        return count
     }
 
     private func configureHandlers() async {

@@ -56,4 +56,14 @@ final class MeetingCoreTests: XCTestCase {
         try store.save(ScreenEvent(id: "s", meetingId: "m", timeRange: .init(startedAtMs: 0), imagePath: "s.webp"))
         XCTAssertThrowsError(try store.save(ScreenEvent(id: "orphan", meetingId: "missing", timeRange: .init(startedAtMs: 0), imagePath: "x")))
     }
+
+    func testAnalysisJobDeduplicatesOnlyActiveWork() throws {
+        let store = try MeetingStore(path: ":memory:")
+        try store.save(Meeting(id: "m"))
+        XCTAssertTrue(try store.enqueueIfNeeded(AnalysisJob(id: "first", meetingId: "m", kind: "summarize")))
+        XCTAssertFalse(try store.enqueueIfNeeded(AnalysisJob(id: "duplicate", meetingId: "m", kind: "summarize")))
+        _ = try store.claimNextAnalysisJob()
+        try store.completeAnalysisJob(id: "first")
+        XCTAssertTrue(try store.enqueueIfNeeded(AnalysisJob(id: "rerun", meetingId: "m", kind: "summarize")))
+    }
 }

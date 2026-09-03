@@ -157,6 +157,21 @@ public final class MeetingStore: @unchecked Sendable {
             """, [.text(job.id),.text(job.meetingId),.text(job.kind),.text(job.status.rawValue),.integer(Int64(job.retryCount)),.optionalText(job.error),.text(now),.text(now),.integer(Int64(job.priority)),.text(Self.date(job.availableAt))])
     }
 
+    /// Enqueues work only when the same meeting/kind is not already pending or
+    /// processing. Completed/failed jobs do not prevent an explicit rerun.
+    @discardableResult public func enqueueIfNeeded(_ job: AnalysisJob) throws -> Bool {
+        let now = Self.date(Date())
+        return try changeCount("""
+            INSERT INTO analysis_jobs(id,meeting_id,kind,status,retry_count,error,created_at,updated_at,priority,available_at)
+            SELECT ?,?,?,?,?,?,?,?,?,?
+            WHERE NOT EXISTS (
+              SELECT 1 FROM analysis_jobs WHERE meeting_id=? AND kind=? AND status IN ('pending','processing')
+            )
+            """, [.text(job.id), .text(job.meetingId), .text(job.kind), .text(job.status.rawValue),
+                    .integer(Int64(job.retryCount)), .optionalText(job.error), .text(now), .text(now),
+                    .integer(Int64(job.priority)), .text(Self.date(job.availableAt)), .text(job.meetingId), .text(job.kind)]) == 1
+    }
+
     /// Claims one ready job in priority/FIFO order. BEGIN IMMEDIATE makes the
     /// select-and-transition atomic across multiple store connections.
     public func claimNextAnalysisJob(now: Date = Date()) throws -> AnalysisJob? {

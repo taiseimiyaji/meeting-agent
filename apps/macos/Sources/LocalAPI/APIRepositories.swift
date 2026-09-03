@@ -32,7 +32,9 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
     public func meeting(id: String) throws -> Meeting? { try store.meeting(id: id) }
     public func timeline(meetingId: String) throws -> Timeline? { try store.timeline(meetingId: meetingId) }
     public func summary(meetingId: String) throws -> MeetingSummary? { try store.activeSummary(meetingId: meetingId) }
-    public func enqueue(meetingId: String, kind: String) throws { try store.enqueue(AnalysisJob(meetingId: meetingId, kind: kind)) }
+    public func enqueue(meetingId: String, kind: String) throws {
+        _ = try store.enqueueIfNeeded(AnalysisJob(meetingId: meetingId, kind: kind, priority: kind == "summarize" ? 2 : 1))
+    }
 
     public func screenImage(id: String) throws -> APIImage? {
         guard let screen = try store.screen(id: id) else { return nil }

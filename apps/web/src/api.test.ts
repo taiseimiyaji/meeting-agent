@@ -71,6 +71,15 @@ describe("OpenAPI client contract", () => {
     expect(fetch).toHaveBeenNthCalledWith(2, "/api/capture", expect.anything());
   });
 
+  it("treats a missing summary as pending and can request generation", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(response({ error: "Summary not found" }, 404)).mockResolvedValueOnce(response(undefined, 202));
+    vi.stubGlobal("fetch", fetch);
+    const { api } = await import("./api");
+    await expect(api.summary("m1")).resolves.toBeNull();
+    await expect(api.summarize("m1")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenNthCalledWith(2, "/api/meetings/m1/summarize", expect.objectContaining({ method: "POST", headers: expect.objectContaining({ Authorization: "session-secret", "X-CSRF-Token": "csrf-secret" }) }));
+  });
+
   it("authenticates WebSocket with subprotocols without leaking token in the URL", async () => {
     const sockets: MockSocket[] = [];
     class MockSocket {

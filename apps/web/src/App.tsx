@@ -78,18 +78,26 @@ function MeetingList({ openMeeting }: { openMeeting: (id: string) => void }) {
 }
 
 function MeetingDetail({ id, back }: { id: string; back: () => void }) {
+  const client = useQueryClient();
   const [tab, setTab] = useState<"timeline" | "summary">("timeline");
   const [focusScreen, setFocusScreen] = useState<string>();
   const [focusTranscript, setFocusTranscript] = useState<string>();
   const meeting = useQuery({ queryKey: ["meeting", id], queryFn: () => api.meeting(id) });
   const transcript = useQuery({ queryKey: ["meeting", id, "transcript"], queryFn: () => api.transcript(id) });
   const screens = useQuery({ queryKey: ["meeting", id, "screens"], queryFn: () => api.screens(id) });
-  const summary = useQuery({ queryKey: ["meeting", id, "summary"], queryFn: () => api.summary(id) });
+  const summary = useQuery({
+    queryKey: ["meeting", id, "summary"], queryFn: () => api.summary(id), enabled: tab === "summary",
+    retry: 1, refetchInterval: (query) => query.state.data == null ? 2_000 : false,
+  });
+  const summarize = useMutation({
+    mutationFn: () => api.summarize(id),
+    onSuccess: () => void client.invalidateQueries({ queryKey: ["meeting", id, "summary"] }),
+  });
   if (meeting.error) return <ErrorBox error={meeting.error}/>;
   return <><button className="back" onClick={back}>← ミーティング一覧</button><header className="detail-header"><div>{meeting.data && <StatusBadge status={meeting.data.status}/>}<h1>{meeting.data?.title ?? "読み込み中…"}</h1><p>{meeting.data ? date(meeting.data.startedAt) : ""} · {meeting.data ? formatTime(duration(meeting.data.startedAt, meeting.data.endedAt)) : ""}</p></div></header>
     {meeting.data && ["interrupted", "failed", "partially_completed"].includes(meeting.data.status) && <div className="evidence-warning"><strong>一部の処理が完了していません</strong><span>取得済みのTranscriptとScreen Evidenceは引き続き閲覧できます。</span></div>}
     <div className="tabs"><button className={tab === "timeline" ? "active" : ""} onClick={() => setTab("timeline")}>Timeline</button><button className={tab === "summary" ? "active" : ""} onClick={() => setTab("summary")}>Summary</button></div>
-    {tab === "timeline" ? <div className="timeline-layout"><TranscriptPanel items={transcript.data ?? []} loading={transcript.isLoading} focus={focusTranscript} onScreen={(screenId) => { setFocusScreen(screenId); document.getElementById(`screen-${screenId}`)?.scrollIntoView({ behavior: "smooth" }); }}/><ScreensPanel items={screens.data ?? []} loading={screens.isLoading} focus={focusScreen} onTranscript={(screenId) => { const hit = transcript.data?.find((t) => t.screenRefs.some((ref) => ref.screenId === screenId)); if (hit) { setFocusTranscript(hit.id); document.getElementById(`transcript-${hit.id}`)?.scrollIntoView({ behavior: "smooth" }); } }}/></div> : <SummaryPanel value={summary.data} loading={summary.isLoading}/>}</>;
+    {tab === "timeline" ? <div className="timeline-layout"><TranscriptPanel items={transcript.data ?? []} loading={transcript.isLoading} focus={focusTranscript} onScreen={(screenId) => { setFocusScreen(screenId); document.getElementById(`screen-${screenId}`)?.scrollIntoView({ behavior: "smooth" }); }}/><ScreensPanel items={screens.data ?? []} loading={screens.isLoading} focus={focusScreen} onTranscript={(screenId) => { const hit = transcript.data?.find((t) => t.screenRefs.some((ref) => ref.screenId === screenId)); if (hit) { setFocusTranscript(hit.id); document.getElementById(`transcript-${hit.id}`)?.scrollIntoView({ behavior: "smooth" }); } }}/></div> : <SummaryPanel value={summary.data} loading={summary.isLoading} error={summary.error ?? summarize.error} generating={summarize.isPending} onGenerate={() => summarize.mutate()}/>}</>;
 }
 
 function TranscriptPanel({ items, loading, focus, onScreen }: { items: TranscriptEvent[]; loading: boolean; focus?: string; onScreen: (id: string) => void }) {
@@ -107,8 +115,10 @@ function AuthenticatedImage({ path, alt }: { path: string; alt: string }) {
   if (image.isError || !objectUrl) return <div className="screen-image-state error">画像を表示できません</div>;
   return <img src={objectUrl} alt={alt}/>;
 }
-function SummaryPanel({ value, loading }: { value: Awaited<ReturnType<typeof api.summary>> | undefined; loading: boolean }) {
-  if (loading) return <Empty>要約を生成しています…</Empty>; if (!value) return <Empty>要約はまだありません。</Empty>;
+function SummaryPanel({ value, loading, error, generating, onGenerate }: { value: Awaited<ReturnType<typeof api.summary>> | undefined; loading: boolean; error: Error | null; generating: boolean; onGenerate: () => void }) {
+  if (loading) return <Empty>要約を確認しています…</Empty>;
+  if (error) return <div className="error-box"><strong>要約の取得に失敗しました</strong><span>{error.message}</span><button className="primary" onClick={onGenerate} disabled={generating}>{generating ? "再生成を依頼中…" : "要約を再生成"}</button></div>;
+  if (!value) return <div className="empty"><span>要約をバックグラウンドで生成しています。</span><button className="primary" onClick={onGenerate} disabled={generating}>{generating ? "生成を依頼中…" : "今すぐ要約を生成"}</button></div>;
   return <div className="summary"><section><p className="eyebrow">OVERVIEW</p><h2>要約</h2><p className="summary-copy">{value.summary}</p><div className="topics">{value.topics.map((topic) => <span key={topic}>{topic}</span>)}</div></section><div className="summary-columns"><SummaryList title="決定事項" marker="✓" items={value.decisions}/><SummaryList title="未決事項" marker="?" items={value.openQuestions}/><section><h2>Action Items</h2>{value.actionItems.map((item) => <div className="action" key={item.text}><span>→</span><div><b>{item.text}</b><small>{item.assignee ?? "担当者未定"}{item.dueAt ? ` · ${date(item.dueAt)}` : ""}</small></div></div>)}</section></div></div>;
 }
 function SummaryList({ title, marker, items }: { title: string; marker: string; items: { text: string }[] }) { return <section><h2>{title}</h2>{items.map((item) => <div className="summary-item" key={item.text}><span>{marker}</span>{item.text}</div>)}</section>; }

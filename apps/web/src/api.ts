@@ -15,9 +15,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { "Content-Type": "application/json", ...(token ? { Authorization: token } : {}), ...init?.headers },
   });
-  if (!response.ok) throw new Error((await response.text()) || `Local API error (${response.status})`);
+  if (!response.ok) throw new APIError(response.status, (await response.text()) || `Local API error (${response.status})`);
   if (response.status === 202 || response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
+}
+class APIError extends Error {
+  constructor(public readonly status: number, message: string) { super(message); }
 }
 async function requestBlob(path: string): Promise<Blob> {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -39,7 +42,16 @@ export const api = {
     if (!useMock) return requestBlob(path);
     return (await fetch(path)).blob();
   },
-  async summary(id: string): Promise<MeetingSummary | null> { if (!useMock) return request(`/api/meetings/${id}/summary`); await pause(); return mock.summaries[id] ?? null; },
+  async summary(id: string): Promise<MeetingSummary | null> {
+    if (!useMock) {
+      try { return await request(`/api/meetings/${id}/summary`); }
+      catch (error) { if (error instanceof APIError && error.status === 404) return null; throw error; }
+    }
+    await pause(); return mock.summaries[id] ?? null;
+  },
+  async summarize(id: string): Promise<void> {
+    if (!useMock) await request<void>(`/api/meetings/${id}/summarize`, { method: "POST", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {} });
+  },
   async startCapture(targetId?: string): Promise<CaptureStatus> { if (!useMock) { await request<void>("/api/capture/start", { method: "POST", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {}, body: targetId ? JSON.stringify({ targetId }) : undefined }); return this.captureStatus(); } const value = { status: "capturing", meetingId: "mtg-live", videoFrames: 0, systemAudioRms: 0, microphoneRms: 0 } satisfies CaptureStatus; mock.updateCapture(value); return value; },
   async stopCapture(): Promise<CaptureStatus> { if (!useMock) { await request<void>("/api/capture/stop", { method: "POST", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {} }); return this.captureStatus(); } const value = { status: "idle", videoFrames: 0, systemAudioRms: 0, microphoneRms: 0 } satisfies CaptureStatus; mock.updateCapture(value); return value; },
   async settings(): Promise<Settings> { const saved = localStorage.getItem("meeting-agent.settings"); return saved ? JSON.parse(saved) as Settings : mock.settings; },
