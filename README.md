@@ -64,6 +64,8 @@ make reset-permissions
 
 The Web UI keeps local API credentials in tab-scoped `sessionStorage`, so an ordinary reload remains signed in. Closing the tab clears them; after restarting the native app, use **Open Web UI** again because a new session is issued.
 
+Screen Recording does not appear in macOS System Settings until the app has requested it at least once. If it is missing, click **Request** or **Request Again** in Meeting Agent first. The reset command clears both the macOS permission and the app's development request marker.
+
 ## Data safety
 
 - Local API binds to `127.0.0.1` and still requires a session token, CSRF protection for mutations, and Origin/Host validation.

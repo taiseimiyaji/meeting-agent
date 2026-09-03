@@ -106,8 +106,10 @@ struct ContentView: View {
             Text(title)
             Spacer()
             Text(state.rawValue).foregroundStyle(.secondary)
-            if state == .notDetermined { Button("Request", action: request) }
-            else if state != .granted { Button("Open Settings", action: settings) }
+            if state == .notDetermined || state == .denied {
+                Button(state == .denied ? "Request Again" : "Request", action: request)
+            }
+            if state == .denied || state == .restricted { Button("Open Settings", action: settings) }
         }
     }
 

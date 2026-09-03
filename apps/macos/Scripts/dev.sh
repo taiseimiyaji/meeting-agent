@@ -29,6 +29,9 @@ if [ "$reset_permissions" = true ]; then
   tccutil reset ScreenCapture "$bundle_id" || true
   tccutil reset Microphone "$bundle_id" || true
   tccutil reset SpeechRecognition "$bundle_id" || true
+  # Keep the app's fallback state in sync with the TCC reset. CoreGraphics has
+  # no public not-determined status, so the app maintains this request marker.
+  defaults delete "$bundle_id" meetingAgent.screenCaptureRequestAttempted 2>/dev/null || true
 fi
 
 echo "Launching $app"

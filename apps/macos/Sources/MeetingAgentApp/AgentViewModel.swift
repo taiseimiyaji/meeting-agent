@@ -62,6 +62,11 @@ final class AgentViewModel: ObservableObject {
 
     func requestScreenPermission() async {
         permissions.screenRecording = await permissionProvider.requestScreenRecording()
+        if permissions.screenRecording == .denied {
+            // The first request registers the app in the Screen Recording list.
+            // A previously denied app must then be enabled in System Settings.
+            openPrivacySettings("ScreenCapture")
+        }
         await refresh()
     }
 
