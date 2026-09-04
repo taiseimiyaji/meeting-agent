@@ -92,26 +92,7 @@ public final class MeetingStore: @unchecked Sendable {
     /// Upserts a partial revision. Final evidence cannot be altered, and older
     /// async STT results cannot overwrite a newer revision.
     public func save(_ event: TranscriptEvent) throws {
-        try transaction {
-            if let existing = try transcriptState(id: event.id) {
-                guard event.revision >= existing.revision else { throw MeetingStoreError.staleRevision(current: existing.revision, attempted: event.revision) }
-                if existing.isFinal && (event.revision != existing.revision || !event.isFinal) {
-                    throw MeetingStoreError.finalizedTranscript(event.id)
-                }
-            }
-            let now = Self.date(Date())
-            try run("""
-                INSERT INTO transcript_events(id,meeting_id,revision,started_at_ms,ended_at_ms,speaker,source,text,is_final,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,started_at_ms=excluded.started_at_ms,
-                  ended_at_ms=excluded.ended_at_ms,speaker=excluded.speaker,source=excluded.source,text=excluded.text,
-                  is_final=excluded.is_final,updated_at=excluded.updated_at
-                """, [.text(event.id), .text(event.meetingId), .integer(Int64(event.revision)), .integer(event.timeRange.startedAtMs),
-                        .optionalInteger(event.timeRange.endedAtMs), .text(event.speaker.rawValue), .text(event.source.rawValue),
-                        .text(event.text), .integer(event.isFinal ? 1 : 0), .text(now), .text(now)])
-            try run("DELETE FROM transcript_screen_refs WHERE transcript_id=?", [.text(event.id)])
-            for reference in event.screenRefs { try relate(transcriptId: event.id, reference: reference) }
-        }
+        try transaction { try saveTranscriptWithinTransaction(event) }
     }
 
     /// At capture finalization, the newest partial revision is the best durable
@@ -129,8 +110,29 @@ public final class MeetingStore: @unchecked Sendable {
         }
         try transaction {
             try run("DELETE FROM transcript_events WHERE meeting_id=?", [.text(meetingId)])
-            for event in events { try save(event) }
+            for event in events { try saveTranscriptWithinTransaction(event) }
         }
+    }
+
+    private func saveTranscriptWithinTransaction(_ event: TranscriptEvent) throws {
+        if let existing = try transcriptState(id: event.id) {
+            guard event.revision >= existing.revision else { throw MeetingStoreError.staleRevision(current: existing.revision, attempted: event.revision) }
+            if existing.isFinal && (event.revision != existing.revision || !event.isFinal) {
+                throw MeetingStoreError.finalizedTranscript(event.id)
+            }
+        }
+        let now = Self.date(Date())
+        try run("""
+            INSERT INTO transcript_events(id,meeting_id,revision,started_at_ms,ended_at_ms,speaker,source,text,is_final,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,started_at_ms=excluded.started_at_ms,
+              ended_at_ms=excluded.ended_at_ms,speaker=excluded.speaker,source=excluded.source,text=excluded.text,
+              is_final=excluded.is_final,updated_at=excluded.updated_at
+            """, [.text(event.id), .text(event.meetingId), .integer(Int64(event.revision)), .integer(event.timeRange.startedAtMs),
+                    .optionalInteger(event.timeRange.endedAtMs), .text(event.speaker.rawValue), .text(event.source.rawValue),
+                    .text(event.text), .integer(event.isFinal ? 1 : 0), .text(now), .text(now)])
+        try run("DELETE FROM transcript_screen_refs WHERE transcript_id=?", [.text(event.id)])
+        for reference in event.screenRefs { try relate(transcriptId: event.id, reference: reference) }
     }
 
     public func save(_ screen: ScreenEvent) throws {
