@@ -9,6 +9,7 @@ public protocol MeetingAPIRepository: Sendable {
     func timeline(meetingId: String) throws -> Timeline?
     func summary(meetingId: String) throws -> MeetingSummary?
     func summaryProgress(meetingId: String) throws -> SummaryProgressResponse
+    func transcriptionProgress(meetingId: String) throws -> TranscriptionProgressResponse
     func enqueue(meetingId: String, kind: String) throws
     func screenImage(id: String) throws -> APIImage?
 }
@@ -48,8 +49,32 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
         } else { state = .notStarted }
         return .init(state: state, retryCount: job?.retryCount ?? 0, error: job?.error, availableAt: job?.availableAt)
     }
+    public func transcriptionProgress(meetingId: String) throws -> TranscriptionProgressResponse {
+        let directory = evidenceRoot.appendingPathComponent(meetingId).appendingPathComponent("Audio")
+        let system = directory.appendingPathComponent("system.caf")
+        let microphone = directory.appendingPathComponent("microphone.caf")
+        func size(_ url: URL) -> Int64 {
+            Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        let systemBytes = size(system), microphoneBytes = size(microphone)
+        let hasTranscript = !(try store.transcripts(meetingId: meetingId)).isEmpty
+        let job = try store.latestAnalysisJob(meetingId: meetingId, kind: "transcribe")
+        let state: SummaryProgressState
+        if let job, job.status != .completed {
+            switch job.status {
+            case .pending: state = job.retryCount > 0 ? .retrying : .queued
+            case .processing: state = .running
+            case .failed: state = .failed
+            case .completed: state = .completed
+            }
+        } else { state = hasTranscript ? .completed : .notStarted }
+        return .init(state: state, retryCount: job?.retryCount ?? 0, error: job?.error,
+                     availableAt: job?.availableAt, hasSystemAudio: systemBytes > 0,
+                     hasMicrophoneAudio: microphoneBytes > 0, archivedBytes: systemBytes + microphoneBytes)
+    }
     public func enqueue(meetingId: String, kind: String) throws {
-        _ = try store.enqueueIfNeeded(AnalysisJob(meetingId: meetingId, kind: kind, priority: kind == "summarize" ? 2 : 1))
+        let priority = kind == "transcribe" ? 3 : kind == "summarize" ? 2 : 1
+        _ = try store.enqueueIfNeeded(AnalysisJob(meetingId: meetingId, kind: kind, priority: priority))
     }
 
     public func screenImage(id: String) throws -> APIImage? {

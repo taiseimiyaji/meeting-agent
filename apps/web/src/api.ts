@@ -1,5 +1,5 @@
 import * as mock from "./mock";
-import type { CaptureStatus, Meeting, MeetingDetail, MeetingPage, MeetingSummary, ScreenEvent, ServerEvent, Settings, SummaryProgress, Timeline, TranscriptEvent } from "./types";
+import type { CaptureStatus, Meeting, MeetingDetail, MeetingPage, MeetingSummary, ScreenEvent, ServerEvent, Settings, SummaryProgress, Timeline, TranscriptEvent, TranscriptionProgress } from "./types";
 
 const baseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
 const useMock = import.meta.env.VITE_USE_MOCK_API === "1";
@@ -63,6 +63,14 @@ export const api = {
   },
   async summarize(id: string): Promise<void> {
     if (!useMock) await request<void>(`/api/meetings/${id}/summarize`, { method: "POST", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {} });
+  },
+  async transcriptionProgress(id: string): Promise<TranscriptionProgress> {
+    if (!useMock) return request(`/api/meetings/${id}/transcription/status`);
+    return { state: (mock.transcripts[id]?.length ?? 0) > 0 ? "completed" : "not_started", retryCount: 0,
+      hasSystemAudio: false, hasMicrophoneAudio: false, archivedBytes: 0 };
+  },
+  async retryTranscription(id: string): Promise<void> {
+    if (!useMock) await request<void>(`/api/meetings/${id}/transcribe`, { method: "POST", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {} });
   },
   async startCapture(targetId?: string): Promise<CaptureStatus> { if (!useMock) { await request<void>("/api/capture/start", { method: "POST", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {}, body: targetId ? JSON.stringify({ targetId }) : undefined }); return this.captureStatus(); } const value = { status: "capturing", meetingId: "mtg-live", videoFrames: 0, systemAudioRms: 0, microphoneRms: 0 } satisfies CaptureStatus; mock.updateCapture(value); return value; },
   async stopCapture(): Promise<CaptureStatus> { if (!useMock) { await request<void>("/api/capture/stop", { method: "POST", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {} }); return this.captureStatus(); } const value = { status: "idle", videoFrames: 0, systemAudioRms: 0, microphoneRms: 0 } satisfies CaptureStatus; mock.updateCapture(value); return value; },

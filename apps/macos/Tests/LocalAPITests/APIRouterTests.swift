@@ -62,6 +62,17 @@ final class APIRouterTests: XCTestCase {
         let runningJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: running.body) as? [String: Any])
         XCTAssertEqual(runningJSON["state"] as? String, "running")
         XCTAssertEqual(runningJSON["retryCount"] as? Int, 1)
+
+        let audio = fixture.evidenceRoot.appendingPathComponent(id).appendingPathComponent("Audio")
+        try FileManager.default.createDirectory(at: audio, withIntermediateDirectories: true)
+        try Data([1, 2, 3]).write(to: audio.appendingPathComponent("system.caf"))
+        let transcription = await fixture.router.route(request(.GET, "/api/meetings/\(id)/transcription/status"))
+        XCTAssertEqual(transcription.status, 200)
+        let transcriptionJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: transcription.body) as? [String: Any])
+        XCTAssertEqual(transcriptionJSON["hasSystemAudio"] as? Bool, true)
+        XCTAssertEqual(transcriptionJSON["archivedBytes"] as? Int, 3)
+        let retry = await fixture.router.route(request(.POST, "/api/meetings/\(id)/transcribe", csrf: true))
+        XCTAssertEqual(retry.status, 202)
     }
 
     func testWebSocketContractAndReconnectDoNotChangeCapture() async throws {

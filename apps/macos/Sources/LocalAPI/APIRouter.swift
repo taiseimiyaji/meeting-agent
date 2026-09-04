@@ -126,7 +126,11 @@ public struct APIRouter: Sendable {
             guard try repository.meeting(id: meetingID) != nil else { return .problem(404, "Meeting not found") }
             return .json(200, try repository.summaryProgress(meetingId: meetingID))
         }
-        if pieces.count == 3, ["summarize", "export"].contains(pieces[2]), request.method == .POST {
+        if pieces.count == 4, pieces[2] == "transcription", pieces[3] == "status", request.method == .GET {
+            guard try repository.meeting(id: meetingID) != nil else { return .problem(404, "Meeting not found") }
+            return .json(200, try repository.transcriptionProgress(meetingId: meetingID))
+        }
+        if pieces.count == 3, ["summarize", "transcribe", "export"].contains(pieces[2]), request.method == .POST {
             guard try repository.meeting(id: meetingID) != nil else { return .problem(404, "Meeting not found") }
             try repository.enqueue(meetingId: meetingID, kind: pieces[2]); return .json(202, APIProblem(error: "queued"))
         }

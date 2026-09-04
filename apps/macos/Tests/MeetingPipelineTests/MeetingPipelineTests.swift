@@ -9,6 +9,21 @@ import Testing
 
 @Suite("Capture evidence pipeline")
 struct MeetingPipelineTests {
+    @Test("captured audio is written to a durable recovery archive")
+    func audioRecoveryArchive() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let writer = try AudioArchiveWriter(directory: root)
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1_600))
+        buffer.frameLength = 1_600
+        try writer.write(buffer, kind: .microphone)
+        writer.finish()
+        let file = root.appendingPathComponent("microphone.caf")
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        #expect((try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) > 0)
+    }
+
     @Test("separate transcriber tracks upsert partial and final evidence")
     func transcriptPersistence() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -145,6 +160,21 @@ struct MeetingPipelineTests {
         #expect(try runtime.enqueueMissingSummaries() == 2)
         #expect(try runtime.enqueueMissingSummaries() == 0)
         #expect(try store.pendingAnalysisJobCount() == 2)
+    }
+
+    @Test("startup queues recovery when saved audio has no transcript")
+    func transcriptionBackfill() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let evidence = root.appendingPathComponent("Meetings")
+        let audio = evidence.appendingPathComponent("recoverable").appendingPathComponent("Audio")
+        try FileManager.default.createDirectory(at: audio, withIntermediateDirectories: true)
+        try Data([1]).write(to: audio.appendingPathComponent("system.caf"))
+        let store = try MeetingStore(path: root.appendingPathComponent("db.sqlite").path)
+        try store.save(Meeting(id: "recoverable", status: .completed))
+        let runtime = try MeetingAnalysisRuntime(store: store, evidenceRoot: evidence)
+        #expect(try runtime.enqueueMissingTranscriptions() == 1)
+        #expect(try runtime.enqueueMissingTranscriptions() == 0)
     }
 
     private func waitUntil(_ condition: @escaping @Sendable () -> Bool) async {

@@ -60,6 +60,11 @@ export interface SummaryProgress {
   error?: string | null;
   availableAt?: string | null;
 }
+export interface TranscriptionProgress extends SummaryProgress {
+  hasSystemAudio: boolean;
+  hasMicrophoneAudio: boolean;
+  archivedBytes: number;
+}
 export type MeetingDetail = Meeting;
 export interface MeetingPage { items: Meeting[]; nextCursor?: string | null; }
 export interface Timeline { transcript: TranscriptEvent[]; screens: ScreenEvent[]; }

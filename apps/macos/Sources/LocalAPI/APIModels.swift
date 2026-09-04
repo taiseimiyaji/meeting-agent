@@ -18,6 +18,24 @@ public struct SummaryProgressResponse: Codable, Sendable, Equatable {
     }
 }
 
+public struct TranscriptionProgressResponse: Codable, Sendable, Equatable {
+    public let state: SummaryProgressState
+    public let retryCount: Int
+    public let error: String?
+    public let availableAt: Date?
+    public let hasSystemAudio: Bool
+    public let hasMicrophoneAudio: Bool
+    public let archivedBytes: Int64
+
+    public init(state: SummaryProgressState, retryCount: Int = 0, error: String? = nil,
+                availableAt: Date? = nil, hasSystemAudio: Bool, hasMicrophoneAudio: Bool,
+                archivedBytes: Int64) {
+        self.state = state; self.retryCount = retryCount; self.error = error; self.availableAt = availableAt
+        self.hasSystemAudio = hasSystemAudio; self.hasMicrophoneAudio = hasMicrophoneAudio
+        self.archivedBytes = archivedBytes
+    }
+}
+
 public enum APICaptureStatus: String, Codable, Sendable { case idle, starting, capturing, stopping, failed }
 
 public struct APICaptureSnapshot: Codable, Sendable, Equatable {

@@ -49,6 +49,7 @@ public actor MeetingPipeline {
     private let microphoneTranscriber: any Transcriber
     private let frameProcessor: KeyFrameProcessor
     private let ocr: VisionTextRecognizer
+    private let audioArchive: AudioArchiveWriter
     private let transcriptionFinalizationGraceMs: Int64
 
     private var meeting: Meeting?
@@ -72,6 +73,9 @@ public actor MeetingPipeline {
         self.microphoneTranscriber = microphoneTranscriber
         frameProcessor = try KeyFrameProcessor(configuration: configuration)
         ocr = VisionTextRecognizer()
+        audioArchive = try AudioArchiveWriter(
+            directory: configuration.keyFrameDirectory.deletingLastPathComponent().appendingPathComponent("Audio", isDirectory: true)
+        )
         transcriptionFinalizationGraceMs = configuration.transcriptionFinalizationGraceMs
     }
 
@@ -113,8 +117,12 @@ public actor MeetingPipeline {
 
         var stopError: Error?
         do { try await capture.stop() } catch { stopError = error }
+        // Capture has stopped producing at this point. Allow the event consumer
+        // to persist the last buffered audio samples before ending Speech.
+        try? await Task.sleep(for: .milliseconds(100))
         await systemTranscriber.stop()
         await microphoneTranscriber.stop()
+        audioArchive.finish()
         await drainConsumers()
         _ = try store.finalizePartialTranscripts(meetingId: value.id)
 
@@ -128,7 +136,11 @@ public actor MeetingPipeline {
         value.endedAt = Date()
         value.status = stopError == nil ? .completed : .partiallyCompleted
         try store.save(value)
-        _ = try store.enqueueIfNeeded(AnalysisJob(meetingId: value.id, kind: "summarize", priority: 2))
+        if try store.transcripts(meetingId: value.id).isEmpty {
+            _ = try store.enqueueIfNeeded(AnalysisJob(meetingId: value.id, kind: "transcribe", priority: 3))
+        } else {
+            _ = try store.enqueueIfNeeded(AnalysisJob(meetingId: value.id, kind: "summarize", priority: 2))
+        }
         meeting = nil
         await frameProcessor.reset()
         systemAudioOriginMs = nil
@@ -163,6 +175,7 @@ public actor MeetingPipeline {
         switch event {
         case .audio(let audio):
             guard let buffer = audio.pcmBuffer else { return }
+            try? audioArchive.write(buffer, kind: audio.kind)
             do {
                 switch audio.kind {
                 case .systemAudio:

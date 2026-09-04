@@ -78,4 +78,16 @@ final class MeetingCoreTests: XCTestCase {
         XCTAssertEqual(try store.transcript(id: "partial")?.revision, 3)
         XCTAssertEqual(try store.transcript(id: "partial")?.isFinal, true)
     }
+
+    func testReplacesTranscriptsAtomicallyForRecovery() throws {
+        let store = try MeetingStore(path: ":memory:")
+        try store.save(Meeting(id: "m"))
+        try store.save(TranscriptEvent(id: "old", meetingId: "m", timeRange: .init(startedAtMs: 0),
+                                       text: "old", source: .system, isFinal: true))
+        let recovered = TranscriptEvent(id: "new", meetingId: "m", timeRange: .init(startedAtMs: 10),
+                                        text: "recovered", source: .microphone, isFinal: true)
+        try store.replaceTranscripts(meetingId: "m", with: [recovered])
+        XCTAssertNil(try store.transcript(id: "old"))
+        XCTAssertEqual(try store.transcripts(meetingId: "m"), [recovered])
+    }
 }

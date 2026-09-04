@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, isAuthenticationError, subscribe } from "./api";
-import type { MeetingStatus, ScreenEvent, ServerEvent, Settings, TranscriptEvent } from "./types";
+import type { MeetingStatus, ScreenEvent, ServerEvent, Settings, TranscriptEvent, TranscriptionProgress } from "./types";
 
 type Page = "home" | "meetings" | "detail" | "settings";
 const labels: Record<MeetingStatus, string> = { idle: "待機", capturing: "収録中", finalizing: "確定中", analyzing: "解析中", completed: "完了", interrupted: "中断", failed: "失敗", partially_completed: "一部完了" };
@@ -85,6 +85,17 @@ function MeetingDetail({ id, back }: { id: string; back: () => void }) {
   const meeting = useQuery({ queryKey: ["meeting", id], queryFn: () => api.meeting(id) });
   const transcript = useQuery({ queryKey: ["meeting", id, "transcript"], queryFn: () => api.transcript(id) });
   const screens = useQuery({ queryKey: ["meeting", id, "screens"], queryFn: () => api.screens(id) });
+  const transcriptionProgress = useQuery({
+    queryKey: ["meeting", id, "transcription-progress"], queryFn: () => api.transcriptionProgress(id),
+    refetchInterval: (query) => ["queued", "running", "retrying"].includes(query.state.data?.state ?? "") ? 1_000 : false,
+  });
+  const retryTranscription = useMutation({
+    mutationFn: () => api.retryTranscription(id),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["meeting", id, "transcription-progress"] });
+      void client.invalidateQueries({ queryKey: ["meeting", id, "transcript"] });
+    },
+  });
   const summary = useQuery({
     queryKey: ["meeting", id, "summary"], queryFn: () => api.summary(id), enabled: tab === "summary",
     retry: 1, refetchInterval: (query) => query.state.data == null ? 2_000 : false,
@@ -104,7 +115,15 @@ function MeetingDetail({ id, back }: { id: string; back: () => void }) {
   return <><button className="back" onClick={back}>← ミーティング一覧</button><header className="detail-header"><div>{meeting.data && <StatusBadge status={meeting.data.status}/>}<h1>{meeting.data?.title ?? "読み込み中…"}</h1><p>{meeting.data ? date(meeting.data.startedAt) : ""} · {meeting.data ? formatTime(duration(meeting.data.startedAt, meeting.data.endedAt)) : ""}</p></div></header>
     {meeting.data && ["interrupted", "failed", "partially_completed"].includes(meeting.data.status) && <div className="evidence-warning"><strong>一部の処理が完了していません</strong><span>取得済みのTranscriptとScreen Evidenceは引き続き閲覧できます。</span></div>}
     <div className="tabs"><button className={tab === "timeline" ? "active" : ""} onClick={() => setTab("timeline")}>Timeline</button><button className={tab === "summary" ? "active" : ""} onClick={() => setTab("summary")}>Summary</button></div>
-    {tab === "timeline" ? <div className="timeline-layout"><TranscriptPanel items={transcript.data ?? []} loading={transcript.isLoading} focus={focusTranscript} onScreen={(screenId) => { setFocusScreen(screenId); document.getElementById(`screen-${screenId}`)?.scrollIntoView({ behavior: "smooth" }); }}/><ScreensPanel items={screens.data ?? []} loading={screens.isLoading} focus={focusScreen} onTranscript={(screenId) => { const hit = transcript.data?.find((t) => t.screenRefs.some((ref) => ref.screenId === screenId)); if (hit) { setFocusTranscript(hit.id); document.getElementById(`transcript-${hit.id}`)?.scrollIntoView({ behavior: "smooth" }); } }}/></div> : <SummaryPanel value={summary.data} progress={summaryProgress.data} loading={summary.isLoading || summaryProgress.isLoading} error={summary.error ?? summaryProgress.error ?? summarize.error} generating={summarize.isPending} onGenerate={() => summarize.mutate()}/>}</>;
+    {tab === "timeline" ? <><TranscriptionRecovery value={transcriptionProgress.data} transcriptCount={transcript.data?.length ?? 0} retrying={retryTranscription.isPending} error={retryTranscription.error} onRetry={() => retryTranscription.mutate()}/><div className="timeline-layout"><TranscriptPanel items={transcript.data ?? []} loading={transcript.isLoading} focus={focusTranscript} onScreen={(screenId) => { setFocusScreen(screenId); document.getElementById(`screen-${screenId}`)?.scrollIntoView({ behavior: "smooth" }); }}/><ScreensPanel items={screens.data ?? []} loading={screens.isLoading} focus={focusScreen} onTranscript={(screenId) => { const hit = transcript.data?.find((t) => t.screenRefs.some((ref) => ref.screenId === screenId)); if (hit) { setFocusTranscript(hit.id); document.getElementById(`transcript-${hit.id}`)?.scrollIntoView({ behavior: "smooth" }); } }}/></div></> : <SummaryPanel value={summary.data} progress={summaryProgress.data} loading={summary.isLoading || summaryProgress.isLoading} error={summary.error ?? summaryProgress.error ?? summarize.error} generating={summarize.isPending} onGenerate={() => summarize.mutate()}/>}</>;
+}
+
+function TranscriptionRecovery({ value, transcriptCount, retrying, error, onRetry }: { value?: TranscriptionProgress; transcriptCount: number; retrying: boolean; error: Error | null; onRetry: () => void }) {
+  if (!value) return null;
+  const hasAudio = value.hasSystemAudio || value.hasMicrophoneAudio;
+  const active = ["queued", "running", "retrying"].includes(value.state);
+  const size = value.archivedBytes < 1_048_576 ? `${Math.round(value.archivedBytes / 1024)} KB` : `${(value.archivedBytes / 1_048_576).toFixed(1)} MB`;
+  return <div className={`transcription-recovery ${value.state}`}><div><strong>{active ? "保存した音声から文字起こしを再処理しています" : hasAudio ? `復旧用音声をローカル保存済み（${size}）` : "復旧用音声はありません"}</strong><span>{value.state === "retrying" ? `一時エラーのため自動再試行待ち（${value.retryCount}回）` : value.state === "failed" ? "自動処理に失敗しました。音声は残っているため再実行できます。" : transcriptCount === 0 && hasAudio ? "文字起こしがない場合は保存音声から再実行できます。" : "システム音声とマイク音声を会議データと一緒に保持しています。"}</span>{(value.error || error) && <small>{value.error ?? error?.message}</small>}</div>{hasAudio && !active && <button className="primary" disabled={retrying} onClick={onRetry}>{retrying ? "依頼中…" : transcriptCount ? "文字起こしを再実行" : "文字起こしを復旧"}</button>}</div>;
 }
 
 function TranscriptPanel({ items, loading, focus, onScreen }: { items: TranscriptEvent[]; loading: boolean; focus?: string; onScreen: (id: string) => void }) {
@@ -139,5 +158,5 @@ function SettingsPage() {
   useEffect(() => { if (query.data) setDraft(query.data); }, [query.data]);
   const save = useMutation({ mutationFn: api.saveSettings, onSuccess: (data) => { client.setQueryData(["settings"], data); } });
   const changed = useMemo(() => draft && JSON.stringify(draft) !== JSON.stringify(query.data), [draft, query.data]);
-  return <><header><div><p className="eyebrow">PREFERENCES</p><h1>設定</h1><p>処理Providerとローカルデータの保持期間を管理します。</p></div></header>{draft && <div className="settings-form"><label><span><b>文字起こし</b><small>音声はローカルで処理されます</small></span><select value={draft.sttProvider} onChange={(e) => setDraft({ ...draft, sttProvider: e.target.value as Settings["sttProvider"] })}><option value="apple_speech">Apple Speech (On-device)</option></select></label><label><span><b>要約Provider</b><small>Codex利用時は送信前に確認します</small></span><select value={draft.summaryProvider} onChange={(e) => setDraft({ ...draft, summaryProvider: e.target.value as Settings["summaryProvider"] })}><option value="apple_foundation_models">Apple Foundation Models</option><option value="codex">Codex (Optional)</option></select></label><label><span><b>保持期間</b><small>期限を過ぎた会議データを削除します</small></span><select value={draft.retentionDays} onChange={(e) => setDraft({ ...draft, retentionDays: Number(e.target.value) })}><option value={7}>7日</option><option value={30}>30日</option><option value={90}>90日</option><option value={365}>1年</option></select></label><label><span><b>Recovery Mode</b><small>暗号化した音声を短期間保持します</small></span><input type="checkbox" checked={draft.recoveryMode} onChange={(e) => setDraft({ ...draft, recoveryMode: e.target.checked })}/></label><button className="primary save" disabled={!changed || save.isPending} onClick={() => draft && save.mutate(draft)}>{save.isSuccess && !changed ? "保存しました ✓" : "設定を保存"}</button></div>}</>;
+  return <><header><div><p className="eyebrow">PREFERENCES</p><h1>設定</h1><p>処理Providerとローカルデータの保持期間を管理します。</p></div></header>{draft && <div className="settings-form"><label><span><b>文字起こし</b><small>音声はローカルで処理されます</small></span><select value={draft.sttProvider} onChange={(e) => setDraft({ ...draft, sttProvider: e.target.value as Settings["sttProvider"] })}><option value="apple_speech">Apple Speech (On-device)</option></select></label><label><span><b>要約Provider</b><small>Codex利用時は送信前に確認します</small></span><select value={draft.summaryProvider} onChange={(e) => setDraft({ ...draft, summaryProvider: e.target.value as Settings["summaryProvider"] })}><option value="apple_foundation_models">Apple Foundation Models</option><option value="codex">Codex (Optional)</option></select></label><label><span><b>保持期間</b><small>期限を過ぎた会議データを削除します</small></span><select value={draft.retentionDays} onChange={(e) => setDraft({ ...draft, retentionDays: Number(e.target.value) })}><option value={7}>7日</option><option value={30}>30日</option><option value={90}>90日</option><option value={365}>1年</option></select></label><label><span><b>文字起こし復旧</b><small>システム音声とマイク音声を会議フォルダへ常時保存します</small></span><b>常時ON</b></label><button className="primary save" disabled={!changed || save.isPending} onClick={() => draft && save.mutate(draft)}>{save.isSuccess && !changed ? "保存しました ✓" : "設定を保存"}</button></div>}</>;
 }

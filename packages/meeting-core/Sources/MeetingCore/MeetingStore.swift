@@ -123,6 +123,16 @@ public final class MeetingStore: @unchecked Sendable {
         )
     }
 
+    public func replaceTranscripts(meetingId: String, with events: [TranscriptEvent]) throws {
+        guard events.allSatisfy({ $0.meetingId == meetingId }) else {
+            throw MeetingStoreError.invalidData("Replacement transcript belongs to another meeting")
+        }
+        try transaction {
+            try run("DELETE FROM transcript_events WHERE meeting_id=?", [.text(meetingId)])
+            for event in events { try save(event) }
+        }
+    }
+
     public func save(_ screen: ScreenEvent) throws {
         let now = Self.date(Date())
         try run("""

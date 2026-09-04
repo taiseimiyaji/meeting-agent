@@ -102,6 +102,17 @@ describe("OpenAPI client contract", () => {
     expect(fetch).toHaveBeenCalledWith("/api/meetings/m1/summary/status", expect.anything());
   });
 
+  it("reads audio recovery status and requests transcription retry", async () => {
+    const progress = { state: "failed", retryCount: 3, hasSystemAudio: true, hasMicrophoneAudio: true, archivedBytes: 4096 };
+    const fetch = vi.fn().mockResolvedValueOnce(response(progress)).mockResolvedValueOnce(response(undefined, 202));
+    vi.stubGlobal("fetch", fetch);
+    const { api } = await import("./api");
+    await expect(api.transcriptionProgress("m1")).resolves.toEqual(progress);
+    await expect(api.retryTranscription("m1")).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenNthCalledWith(1, "/api/meetings/m1/transcription/status", expect.anything());
+    expect(fetch).toHaveBeenNthCalledWith(2, "/api/meetings/m1/transcribe", expect.objectContaining({ method: "POST", headers: expect.objectContaining({ "X-CSRF-Token": "csrf-secret" }) }));
+  });
+
   it("authenticates WebSocket with subprotocols without leaking token in the URL", async () => {
     const sockets: MockSocket[] = [];
     class MockSocket {

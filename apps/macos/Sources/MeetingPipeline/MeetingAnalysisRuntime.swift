@@ -1,15 +1,20 @@
 import Foundation
 import MeetingAnalysis
+import MeetingCapture
 import MeetingCore
 
 public enum MeetingAnalysisRuntimeError: LocalizedError {
     case meetingNotFound(String)
     case unsafeMeetingID(String)
+    case audioArchiveMissing(String)
+    case transcriptionEmpty(String)
 
     public var errorDescription: String? {
         switch self {
         case .meetingNotFound(let id): "Meeting \(id) was not found."
         case .unsafeMeetingID(let id): "Meeting ID is unsafe for export: \(id)"
+        case .audioArchiveMissing(let id): "No saved audio is available for meeting \(id)."
+        case .transcriptionEmpty(let id): "Speech Recognition returned no text for meeting \(id)."
         }
     }
 }
@@ -30,6 +35,7 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
 
     public func start() async throws {
         await configureHandlers()
+        try enqueueMissingTranscriptions()
         try enqueueMissingSummaries()
         try await worker.start()
     }
@@ -41,13 +47,31 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
         for meeting in try store.meetings(limit: 10_000) {
             guard [.completed, .partiallyCompleted, .interrupted].contains(meeting.status),
                   try store.activeSummary(meetingId: meeting.id) == nil else { continue }
+            if try store.transcripts(meetingId: meeting.id).isEmpty,
+               Self.hasAudio(meetingID: meeting.id, evidenceRoot: evidenceRoot) { continue }
             if try store.enqueueIfNeeded(.init(meetingId: meeting.id, kind: "summarize", priority: 2)) { count += 1 }
+        }
+        return count
+    }
+
+    @discardableResult public func enqueueMissingTranscriptions() throws -> Int {
+        var count = 0
+        for meeting in try store.meetings(limit: 10_000) {
+            guard [.completed, .partiallyCompleted, .interrupted].contains(meeting.status),
+                  try store.transcripts(meetingId: meeting.id).isEmpty,
+                  Self.hasAudio(meetingID: meeting.id, evidenceRoot: evidenceRoot) else { continue }
+            if try store.enqueueIfNeeded(.init(meetingId: meeting.id, kind: "transcribe", priority: 3)) { count += 1 }
         }
         return count
     }
 
     private func configureHandlers() async {
         let store = store
+        let evidenceRoot = evidenceRoot
+        await worker.register(kind: "transcribe") { job in
+            try await Self.transcribe(meetingID: job.meetingId, store: store, evidenceRoot: evidenceRoot)
+            _ = try store.enqueueIfNeeded(.init(meetingId: job.meetingId, kind: "summarize", priority: 2))
+        }
         await worker.register(kind: "summarize") { job in
             guard let timeline = try store.timeline(meetingId: job.meetingId) else {
                 throw MeetingAnalysisRuntimeError.meetingNotFound(job.meetingId)
@@ -61,13 +85,39 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
                 value: summary
             ))
         }
-        let evidenceRoot = evidenceRoot
         await worker.register(kind: "export") { job in
             try Self.export(meetingID: job.meetingId, store: store, evidenceRoot: evidenceRoot)
         }
     }
 
     public func stop() async { await worker.stop() }
+
+    private static func hasAudio(meetingID: String, evidenceRoot: URL) -> Bool {
+        let directory = evidenceRoot.appendingPathComponent(meetingID).appendingPathComponent("Audio")
+        return ["system.caf", "microphone.caf"].contains { FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path) }
+    }
+
+    private static func transcribe(meetingID: String, store: MeetingStore, evidenceRoot: URL) async throws {
+        let directory = evidenceRoot.appendingPathComponent(meetingID).appendingPathComponent("Audio")
+        let inputs: [(String, Speaker, AudioSource)] = [
+            ("system.caf", .remote, .system), ("microphone.caf", .self, .microphone)
+        ]
+        let available = inputs.filter { FileManager.default.fileExists(atPath: directory.appendingPathComponent($0.0).path) }
+        guard !available.isEmpty else { throw MeetingAnalysisRuntimeError.audioArchiveMissing(meetingID) }
+
+        let transcriber = AppleSpeechFileTranscriber()
+        var events: [MeetingCore.TranscriptEvent] = []
+        for (name, speaker, source) in available {
+            let result = try await transcriber.transcribe(file: directory.appendingPathComponent(name))
+            guard !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            events.append(.init(meetingId: meetingID,
+                                timeRange: .init(startedAtMs: result.startedAtMs, endedAtMs: result.endedAtMs),
+                                speaker: speaker, text: result.text, source: source, isFinal: true))
+        }
+        guard !events.isEmpty else { throw MeetingAnalysisRuntimeError.transcriptionEmpty(meetingID) }
+        try store.replaceTranscripts(meetingId: meetingID, with: events)
+        for event in events { _ = try? store.associateVisibleScreens(transcriptId: event.id) }
+    }
 
     /// Deterministic hook used by tests and one-shot clients.
     @discardableResult public func processNext(now: Date = Date()) async throws -> Bool {
