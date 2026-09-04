@@ -44,7 +44,7 @@ struct MeetingAgentApp: App {
     var body: some Scene {
         WindowGroup("Meeting Agent") {
             ContentView(model: model)
-                .frame(minWidth: 660, minHeight: 620)
+                .frame(minWidth: 820, minHeight: 680)
         }
         MenuBarExtra("Meeting Agent", systemImage: model.isCapturing ? "record.circle.fill" : "waveform.circle") {
             Button(model.isCapturing ? "Stop Capture" : "Open Meeting Agent") {

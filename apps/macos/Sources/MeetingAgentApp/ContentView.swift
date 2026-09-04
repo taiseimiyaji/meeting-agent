@@ -3,8 +3,26 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var model: AgentViewModel
+    @State private var selectedTab = AppTab.capture
+    @State private var webReloadID = 0
+
+    private enum AppTab: Hashable { case capture, records }
 
     var body: some View {
+        TabView(selection: $selectedTab) {
+            captureView
+                .tabItem { Label("Capture", systemImage: "record.circle") }
+                .tag(AppTab.capture)
+
+            recordsView
+                .tabItem { Label("Meetings", systemImage: "text.document") }
+                .tag(AppTab.records)
+        }
+        .padding(.top, 8)
+    }
+
+    private var captureView: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 20) {
             HStack {
                 VStack(alignment: .leading) {
@@ -52,13 +70,11 @@ struct ContentView: View {
                     .padding(.bottom, 6)
             }
 
-            GroupBox("Local API") {
+            GroupBox("Meeting records") {
                 HStack {
-                    Text("http://127.0.0.1:8765/api").textSelection(.enabled)
+                    Text("録画後の文字起こし・要約・根拠をアプリ内で確認できます。")
                     Spacer()
-                    Text("token …\(model.apiCredentials.sessionToken.suffix(6))").foregroundStyle(.secondary)
-                    Button("Open Web UI") { model.openWebUI() }
-                    Button("Copy configuration") { model.copyAPIConfiguration() }
+                    Button("Open Meetings") { selectedTab = .records }
                 }.padding(6)
             }
 
@@ -92,6 +108,31 @@ struct ContentView: View {
             }
         }
         .padding(24)
+        }
+    }
+
+    @ViewBuilder private var recordsView: some View {
+        if let url = model.webUIURL {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Meetings").font(.title2.bold())
+                    Text("文字起こし・要約・根拠").foregroundStyle(.secondary)
+                    Spacer()
+                    Button { webReloadID += 1 } label: {
+                        Label("Reload", systemImage: "arrow.clockwise")
+                    }
+                    Menu {
+                        Button("Open in Browser") { model.openWebUI() }
+                        Button("Copy API Configuration") { model.copyAPIConfiguration() }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                }
+                .padding(12)
+                Divider()
+                EmbeddedWebView(url: url, reloadID: webReloadID)
+            }
+        } else {
+            ContentUnavailableView("Meetings unavailable", systemImage: "exclamationmark.triangle")
+        }
     }
 
     private func permissionRow(

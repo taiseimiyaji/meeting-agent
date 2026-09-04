@@ -127,8 +127,13 @@ final class AgentViewModel: ObservableObject {
     }
 
     func openWebUI() {
+        guard let url = webUIURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    var webUIURL: URL? {
         var components = URLComponents(string: "http://127.0.0.1:8765/")!
         components.fragment = "sessionToken=\(apiCredentials.sessionToken)&csrfToken=\(apiCredentials.csrfToken)"
-        if let url = components.url { NSWorkspace.shared.open(url) }
+        return components.url
     }
 }
