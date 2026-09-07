@@ -61,6 +61,7 @@ actor TestFileTranscriber: FileTranscriber {
     static func main() async throws {
         let args = Array(CommandLine.arguments.dropFirst())
         if args.first == "summary-readiness" { try await verifySummaryReadiness(); return }
+        if args.first == "echo" { try await verifyEchoes(); return }
         let models = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/MeetingAgentVerification/Models")
         if args.first == "prepare-whisper" {
             try await WhisperFileTranscriber(directory: models).prepareModel(); print("WhisperKit model ready"); return
@@ -95,6 +96,7 @@ actor TestFileTranscriber: FileTranscriber {
             return
         }
         try await verifySummaryReadiness()
+        try await verifyEchoes()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("MeetingVerification-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -269,4 +271,49 @@ func verifySummaryReadiness() async throws {
     try store.enqueue(AnalysisJob(id: "summary-recording", meetingId: recording.id, kind: "summarize"))
     _ = try await runtime.processNext(now: start.addingTimeInterval(100))
     try check(try store.analysisJob(id: "summary-recording")?.error == "録音の終了を待っています。", "recording in progress is distinct from an empty transcript")
+}
+
+func verifyEchoes() async throws {
+    let message = "来週のリリースに向けてこの設計を採用することに決定しました。"
+    let remote = MeetingCore.TranscriptEvent(id: "remote", meetingId: "echo-meeting", timeRange: .init(startedAtMs: 1000, endedAtMs: 10000), speaker: .remote, text: message, source: .system, isFinal: true)
+    var mic = remote; mic.id = "mic"; mic.source = .microphone; mic.speaker = .self
+    mic.timeRange = .init(startedAtMs: 1200, endedAtMs: 10200)
+    let marked = TranscriptEchoDetector.annotate([mic, remote])
+    try check(marked[0].possibleEchoOf == remote.id && marked[1].possibleEchoOf == nil, "cross-track echo is marked regardless of completion order")
+    try check(marked[0].text == mic.text && marked[0].id == mic.id, "echo annotation preserves original text and evidence ID")
+    try check(TranscriptEchoDetector.annotate([mic])[0].possibleEchoOf == nil, "microphone-only recording is retained")
+    var later = mic; later.timeRange = .init(startedAtMs: 11000, endedAtMs: 20000)
+    var mixed = mic; mixed.text += "ただし公開日は変更したいです。"
+    var shortMic = mic; shortMic.text = "はい、そうですね。"
+    var shortRemote = remote; shortRemote.text = shortMic.text
+    var partial = mic; partial.isFinal = false
+    var otherMeeting = mic; otherMeeting.meetingId = "another"
+    var noEnd = mic; noEnd.timeRange.endedAtMs = nil
+    for (event, name) in [(later, "later repeated speech"), (mixed, "mixed local speech"), (partial, "partial recognition"), (otherMeeting, "another meeting"), (noEnd, "unknown speech end")] {
+        try check(TranscriptEchoDetector.annotate([event, remote])[0].possibleEchoOf == nil, "retains \(name)")
+    }
+    try check(TranscriptEchoDetector.annotate([shortMic, shortRemote])[0].possibleEchoOf == nil, "retains short acknowledgments on both tracks")
+    var numericMic = mic; numericMic.text = "この変更の対象となるリリース番号は15で確定しました。"
+    var numericRemote = remote; numericRemote.text = "この変更の対象となるリリース番号は1.5で確定しました。"
+    try check(TranscriptEchoDetector.annotate([numericMic, numericRemote])[0].possibleEchoOf == nil, "numeric punctuation cannot create a false duplicate")
+    try check(try JSONDecoder().decode(MeetingCore.TranscriptEvent.self, from: JSONEncoder().encode(marked[0])).possibleEchoOf == remote.id, "echo annotation survives API JSON encoding")
+
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try MeetingStore(path: root.appendingPathComponent("db.sqlite").path)
+    try store.save(Meeting(id: remote.meetingId, endedAt: Date(), status: .completed))
+    try store.save(mic); try store.save(remote)
+    let repository = try LocalMeetingRepository(store: store, evidenceRoot: root.appendingPathComponent("Meetings"))
+    try check(try repository.timeline(meetingId: remote.meetingId)?.transcripts.first(where: { $0.id == mic.id })?.possibleEchoOf == remote.id, "API timeline annotates existing persisted duplicates")
+    try check(try store.transcripts(meetingId: remote.meetingId).count == 2, "both raw database transcripts are retained")
+    var settings = AgentSettings(); settings.summaryProvider = "local_heuristic"
+    try repository.saveSettings(settings)
+    let runtime = try MeetingAnalysisRuntime(store: store, evidenceRoot: root.appendingPathComponent("Meetings"))
+    try repository.enqueue(meetingId: remote.meetingId, kind: "summarize")
+    _ = try await runtime.processNext()
+    let summary = try store.activeSummary(meetingId: remote.meetingId)
+    try check(summary?.summary == message && summary?.decisions.first?.evidenceIds == [remote.id], "summary worker uses the remote evidence once")
+    try repository.enqueue(meetingId: remote.meetingId, kind: "summarize")
+    try check(try repository.summaryProgress(meetingId: remote.meetingId).state == .queued, "regeneration reports queued even when an older summary exists")
 }
