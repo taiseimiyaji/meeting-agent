@@ -1,6 +1,7 @@
 import Foundation
 import MeetingCapture
 import MeetingCore
+import MeetingPipeline
 
 public struct APIRouter: Sendable {
     private let repository: any MeetingAPIRepository
@@ -73,6 +74,26 @@ public struct APIRouter: Sendable {
     }
 
     private func authenticatedRoute(_ route: String, components: URLComponents?, request: HTTPRequest) async throws -> HTTPResponse {
+        if route == "settings", request.method == .GET { return .json(200, try repository.settings()) }
+        if route == "settings", request.method == .POST {
+            do {
+                let value = try JSONDecoder().decode(AgentSettings.self, from: request.body)
+                try value.validate()
+                try repository.saveSettings(value)
+                return .json(200, value)
+            } catch { return .problem(400, error.localizedDescription) }
+        }
+        if route == "settings/prepare-speech-model", request.method == .POST {
+            if try repository.settings().sttProvider == "whisperkit" {
+                try await repository.prepareWhisperModel()
+                return .json(200, APIProblem(error: "ready"))
+            }
+            if #available(macOS 26.0, *) {
+                try await withTranscriptionDeadline(seconds: 600) { try await AnalyzerFileTranscriber.prepareModel() }
+                return .json(200, APIProblem(error: "ready"))
+            }
+            return .problem(409, "SpeechAnalyzer requires macOS 26")
+        }
         if route == "capture", request.method == .GET { return .json(200, await capture.snapshot()) }
         if route == "capture/start", request.method == .POST {
             let input = request.body.isEmpty ? StartCaptureBody(targetId: nil) : try JSONDecoder().decode(StartCaptureBody.self, from: request.body)
@@ -113,9 +134,12 @@ public struct APIRouter: Sendable {
             guard let timeline = try repository.timeline(meetingId: meetingID) else { return .problem(404, "Meeting not found") }
             let after = Int64(query("afterMs", components) ?? "") ?? 0
             let limit = min(max(queryInt("limit", components) ?? 200, 1), 1_000)
-            let transcripts = timeline.transcripts.filter { $0.timeRange.startedAtMs >= after }.prefix(limit)
-            let screens = timeline.screens.filter { $0.timeRange.startedAtMs >= after }.prefix(limit)
-            return .json(200, APITimeline(transcript: Array(transcripts), screens: screens.map(APIScreenEvent.init)))
+            let offset = max(0, queryInt("offset", components) ?? 0)
+            let transcripts = timeline.transcripts.filter { $0.timeRange.startedAtMs >= after }
+            let screens = timeline.screens.filter { $0.timeRange.startedAtMs >= after }
+            let next = offset + limit < max(transcripts.count, screens.count) ? offset + limit : nil
+            return .json(200, APITimeline(transcript: Array(transcripts.dropFirst(offset).prefix(limit)),
+                                         screens: screens.dropFirst(offset).prefix(limit).map(APIScreenEvent.init), nextOffset: next))
         }
         if pieces.count == 3, pieces[2] == "summary", request.method == .GET {
             guard try repository.meeting(id: meetingID) != nil else { return .problem(404, "Meeting not found") }
@@ -131,7 +155,12 @@ public struct APIRouter: Sendable {
             return .json(200, try repository.transcriptionProgress(meetingId: meetingID))
         }
         if pieces.count == 3, ["summarize", "transcribe", "export"].contains(pieces[2]), request.method == .POST {
-            guard try repository.meeting(id: meetingID) != nil else { return .problem(404, "Meeting not found") }
+            guard let meeting = try repository.meeting(id: meetingID) else { return .problem(404, "Meeting not found") }
+            if [.capturing, .finalizing].contains(meeting.status) { return .problem(409, "録音の終了後に再処理してください。") }
+            let progress = try repository.transcriptionProgress(meetingId: meetingID)
+            if pieces[2] == "transcribe", [.queued, .running, .retrying].contains(progress.state) {
+                return .problem(409, "文字起こしはすでに処理中です。")
+            }
             try repository.enqueue(meetingId: meetingID, kind: pieces[2]); return .json(202, APIProblem(error: "queued"))
         }
         return .problem(404, "Route not found")

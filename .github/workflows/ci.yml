@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   swift:
-    runs-on: macos-15
+    runs-on: macos-26
     strategy:
       fail-fast: false
       matrix:
@@ -21,10 +21,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode
-        run: sudo xcode-select --switch /Applications/Xcode.app
+        run: sudo xcode-select --switch /Applications/Xcode_26.6.app
       - name: Test ${{ matrix.package }}
         working-directory: ${{ matrix.package }}
         run: swift test
+      - name: Verify durable audio and recovery integration
+        if: matrix.package == 'apps/macos'
+        run: swift run --package-path apps/macos MeetingVerification
       - uses: actions/setup-node@v4
         if: matrix.package == 'apps/macos'
         with:

@@ -19,7 +19,9 @@ struct MeetingPipelineTests {
         buffer.frameLength = 1_600
         try writer.write(buffer, kind: .microphone)
         writer.finish()
-        let file = root.appendingPathComponent("microphone.caf")
+        let chunks = try AudioArchiveWriter.chunks(in: root)
+        #expect(chunks.count == 1)
+        let file = root.appendingPathComponent(try #require(chunks.first).fileName)
         #expect(FileManager.default.fileExists(atPath: file.path))
         #expect((try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) > 0)
     }

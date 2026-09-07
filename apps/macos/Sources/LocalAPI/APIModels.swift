@@ -26,13 +26,20 @@ public struct TranscriptionProgressResponse: Codable, Sendable, Equatable {
     public let hasSystemAudio: Bool
     public let hasMicrophoneAudio: Bool
     public let archivedBytes: Int64
+    public let totalChunks: Int
+    public let completedChunks: Int
+    public let failedChunks: Int
+    public let provider: String?
+    public let isCapturing: Bool
 
     public init(state: SummaryProgressState, retryCount: Int = 0, error: String? = nil,
                 availableAt: Date? = nil, hasSystemAudio: Bool, hasMicrophoneAudio: Bool,
-                archivedBytes: Int64) {
+                archivedBytes: Int64, totalChunks: Int = 0, completedChunks: Int = 0, failedChunks: Int = 0, provider: String? = nil, isCapturing: Bool = false) {
         self.state = state; self.retryCount = retryCount; self.error = error; self.availableAt = availableAt
         self.hasSystemAudio = hasSystemAudio; self.hasMicrophoneAudio = hasMicrophoneAudio
         self.archivedBytes = archivedBytes
+        self.totalChunks = totalChunks; self.completedChunks = completedChunks; self.failedChunks = failedChunks
+        self.provider = provider; self.isCapturing = isCapturing
     }
 }
 
@@ -55,7 +62,7 @@ public struct APICaptureSnapshot: Codable, Sendable, Equatable {
 
 struct StartCaptureBody: Decodable { var targetId: String? }
 struct MeetingPage: Encodable { let items: [Meeting]; let nextCursor: String? }
-struct APITimeline: Encodable { let transcript: [TranscriptEvent]; let screens: [APIScreenEvent] }
+struct APITimeline: Encodable { let transcript: [TranscriptEvent]; let screens: [APIScreenEvent]; let nextOffset: Int? }
 struct APIScreenEvent: Encodable {
     let id: String; let startedAtMs: Int64; let endedAtMs: Int64?; let imageUrl: String
     let ocr: String?; let description: String?; let analysisStatus: String
@@ -67,6 +74,7 @@ struct APIScreenEvent: Encodable {
 }
 
 public enum APIEvent: Encodable, Sendable {
+    case dataChanged
     case capture(APICaptureSnapshot)
     case timelineChanged(meetingId: String)
 
@@ -74,6 +82,7 @@ public enum APIEvent: Encodable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         switch self {
+        case .dataChanged: try values.encode("data_changed", forKey: .type)
         case .capture(let capture):
             try values.encode("capture", forKey: .type); try values.encode(capture, forKey: .capture)
         case .timelineChanged(let meetingId):

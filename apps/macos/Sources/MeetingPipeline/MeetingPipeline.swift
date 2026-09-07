@@ -22,6 +22,7 @@ public struct MeetingPipelineConfiguration: Sendable {
     public var meanDifferenceThreshold: Double
     public var stabilityMs: Int64
     public var transcriptionFinalizationGraceMs: Int64
+    public var liveTranscriptionEnabled: Bool = false
 
     public init(
         keyFrameDirectory: URL,
@@ -53,6 +54,11 @@ public actor MeetingPipeline {
     private let transcriptionFinalizationGraceMs: Int64
 
     private var meeting: Meeting?
+    private var directAudio = false
+    private var captureFailure: String?
+    private let liveTranscriptionEnabled: Bool
+    private var videoTask: Task<Void, Never>?
+    private var videoContinuation: AsyncStream<VideoFrameEvent>.Continuation?
     private var eventTask: Task<Void, Never>?
     private var transcriptTasks: [Task<Void, Never>] = []
     private var ocrTasks: [Task<Void, Never>] = []
@@ -67,6 +73,7 @@ public actor MeetingPipeline {
         systemTranscriber: any Transcriber = AppleSpeechTranscriber(track: .remoteSystemAudio),
         microphoneTranscriber: any Transcriber = AppleSpeechTranscriber(track: .localMicrophone)
     ) throws {
+        liveTranscriptionEnabled = configuration.liveTranscriptionEnabled
         self.capture = capture
         self.store = store
         self.systemTranscriber = systemTranscriber
@@ -90,11 +97,28 @@ public actor MeetingPipeline {
         meeting = value
 
         do {
-            try await systemTranscriber.start()
-            try await microphoneTranscriber.start()
+            if !liveTranscriptionEnabled {
+            directAudio = await capture.setAudioSink { [audioArchive] audio in
+                guard let buffer = audio.pcmBuffer else {
+                    audioArchive.recordFailure("Audio PCM conversion failed"); return
+                }
+                do { try audioArchive.write(buffer, kind: audio.kind, timestampMs: audio.timestamp.milliseconds) }
+                catch { audioArchive.recordFailure(error.localizedDescription) }
+            }
+            }
+            if liveTranscriptionEnabled {
+                if captureConfiguration.capturesSystemAudio {
+                    do { try await systemTranscriber.start() } catch { audioArchive.recordFailure("Live STT: \(error.localizedDescription)") }
+                }
+                if captureConfiguration.capturesMicrophone {
+                    do { try await microphoneTranscriber.start() } catch { audioArchive.recordFailure("Live STT: \(error.localizedDescription)") }
+                }
+            }
             startConsumers(meetingID: value.id)
             try await capture.start(configuration: captureConfiguration)
         } catch {
+            _ = await capture.setAudioSink(nil)
+            audioArchive.finish()
             await cleanupConsumers()
             await systemTranscriber.stop()
             await microphoneTranscriber.stop()
@@ -117,9 +141,13 @@ public actor MeetingPipeline {
 
         var stopError: Error?
         do { try await capture.stop() } catch { stopError = error }
-        // Capture has stopped producing at this point. Allow the event consumer
-        // to persist the last buffered audio samples before ending Speech.
-        try? await Task.sleep(for: .milliseconds(100))
+        if capture.providesStopEvent { _ = await eventTask?.result }
+        else { eventTask?.cancel(); _ = await eventTask?.result }
+        eventTask = nil
+        _ = await capture.setAudioSink(nil)
+        videoContinuation?.finish()
+        _ = await videoTask?.result
+        videoTask = nil
         await systemTranscriber.stop()
         await microphoneTranscriber.stop()
         audioArchive.finish()
@@ -134,9 +162,9 @@ public actor MeetingPipeline {
         await drainOCR()
 
         value.endedAt = Date()
-        value.status = stopError == nil ? .completed : .partiallyCompleted
+        value.status = stopError == nil && captureFailure == nil && audioArchive.lastError == nil ? .completed : .partiallyCompleted
         try store.save(value)
-        if try store.transcripts(meetingId: value.id).isEmpty {
+        if try audioArchive.archivedFrames > 0 || store.transcripts(meetingId: value.id).isEmpty {
             _ = try store.enqueueIfNeeded(AnalysisJob(meetingId: value.id, kind: "transcribe", priority: 3))
         } else {
             _ = try store.enqueueIfNeeded(AnalysisJob(meetingId: value.id, kind: "summarize", priority: 2))
@@ -148,24 +176,36 @@ public actor MeetingPipeline {
         if let stopError { throw stopError }
     }
 
+    public var captureEndedUnexpectedly: Bool { captureFailure != nil }
+    public var failure: String? { captureFailure ?? audioArchive.lastError }
+
     private func startConsumers(meetingID: String) {
+        let frames = AsyncStream<VideoFrameEvent>.makeStream(bufferingPolicy: .bufferingNewest(2))
+        videoContinuation = frames.continuation
+        videoTask = Task {
+            for await frame in frames.stream { await self.consume(.video(frame), meetingID: meetingID) }
+        }
         eventTask = Task { [capture] in
             for await event in capture.events {
                 guard !Task.isCancelled else { break }
-                await self.consume(event, meetingID: meetingID)
+                switch event {
+                case .stopped: return
+                case .video(let frame): self.videoContinuation?.yield(frame)
+                default: await self.consume(event, meetingID: meetingID)
+                }
             }
         }
         transcriptTasks = [
             Task { [systemTranscriber] in
                 for await event in systemTranscriber.events {
                     guard !Task.isCancelled else { break }
-                    await self.persist(event, meetingID: meetingID)
+                    self.persist(event, meetingID: meetingID)
                 }
             },
             Task { [microphoneTranscriber] in
                 for await event in microphoneTranscriber.events {
                     guard !Task.isCancelled else { break }
-                    await self.persist(event, meetingID: meetingID)
+                    self.persist(event, meetingID: meetingID)
                 }
             }
         ]
@@ -173,9 +213,15 @@ public actor MeetingPipeline {
 
     private func consume(_ event: CaptureEvent, meetingID: String) async {
         switch event {
+        case .stopped: break
+        case .failure(let message): captureFailure = message; audioArchive.recordFailure(message)
         case .audio(let audio):
             guard let buffer = audio.pcmBuffer else { return }
-            try? audioArchive.write(buffer, kind: audio.kind)
+            if !directAudio {
+                do { try audioArchive.write(buffer, kind: audio.kind, timestampMs: audio.timestamp.milliseconds) }
+                catch { audioArchive.recordFailure(error.localizedDescription) }
+            }
+            guard liveTranscriptionEnabled else { return }
             do {
                 switch audio.kind {
                 case .systemAudio:
@@ -186,7 +232,7 @@ public actor MeetingPipeline {
                     try await microphoneTranscriber.consume(buffer)
                 case .screen: break
                 }
-            } catch { /* Capture must remain live when transcription is unavailable. */ }
+            } catch { audioArchive.recordFailure("Live STT: \(error.localizedDescription)") }
         case .video(let frame):
             do {
                 guard let keyFrame = try await frameProcessor.consume(frame) else { return }
@@ -257,7 +303,7 @@ public actor MeetingPipeline {
         eventTask = nil
         // Speech emits its final result asynchronously after endAudio(). Keep
         // readers alive briefly; otherwise short captures commonly lose it.
-        if transcriptionFinalizationGraceMs > 0 {
+        if liveTranscriptionEnabled && transcriptionFinalizationGraceMs > 0 {
             try? await Task.sleep(for: .milliseconds(transcriptionFinalizationGraceMs))
         } else { await Task.yield() }
         transcriptTasks.forEach { $0.cancel() }
@@ -266,6 +312,9 @@ public actor MeetingPipeline {
     }
 
     private func cleanupConsumers() async {
+        videoContinuation?.finish()
+        videoTask?.cancel()
+        videoTask = nil
         eventTask?.cancel()
         transcriptTasks.forEach { $0.cancel() }
         eventTask = nil

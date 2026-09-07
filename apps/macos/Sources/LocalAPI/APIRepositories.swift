@@ -4,6 +4,10 @@ import MeetingCore
 import MeetingPipeline
 
 public protocol MeetingAPIRepository: Sendable {
+    var changeVersion: Int64 { get }
+    func settings() throws -> AgentSettings
+    func saveSettings(_ value: AgentSettings) throws
+    func prepareWhisperModel() async throws
     func meetings(limit: Int, before: Date?) throws -> [Meeting]
     func meeting(id: String) throws -> Meeting?
     func timeline(meetingId: String) throws -> Timeline?
@@ -12,6 +16,13 @@ public protocol MeetingAPIRepository: Sendable {
     func transcriptionProgress(meetingId: String) throws -> TranscriptionProgressResponse
     func enqueue(meetingId: String, kind: String) throws
     func screenImage(id: String) throws -> APIImage?
+}
+
+public extension MeetingAPIRepository {
+    var changeVersion: Int64 { 0 }
+    func prepareWhisperModel() async throws { throw CocoaError(.featureUnsupported) }
+    func settings() throws -> AgentSettings { .init() }
+    func saveSettings(_ value: AgentSettings) throws { throw CocoaError(.featureUnsupported) }
 }
 
 public struct APIImage: Sendable {
@@ -28,6 +39,17 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
         self.store = store
         self.evidenceRoot = evidenceRoot.standardizedFileURL.resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: self.evidenceRoot, withIntermediateDirectories: true)
+    }
+
+    public func prepareWhisperModel() async throws {
+        try await WhisperFileTranscriber(directory: evidenceRoot.deletingLastPathComponent().appendingPathComponent("Models")).prepareModel()
+    }
+    public var changeVersion: Int64 { store.changeVersion }
+    public func settings() throws -> AgentSettings {
+        try AgentSettingsStore(url: evidenceRoot.deletingLastPathComponent().appendingPathComponent("settings.json")).load()
+    }
+    public func saveSettings(_ value: AgentSettings) throws {
+        try AgentSettingsStore(url: evidenceRoot.deletingLastPathComponent().appendingPathComponent("settings.json")).save(value)
     }
 
     public func meetings(limit: Int, before: Date?) throws -> [Meeting] { try store.meetings(limit: limit, before: before) }
@@ -56,9 +78,27 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
         func size(_ url: URL) -> Int64 {
             Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
         }
-        let systemBytes = size(system), microphoneBytes = size(microphone)
+        var systemBytes = size(system), microphoneBytes = size(microphone)
+        var total = 0, completed = 0, failed = 0
+        var provider: String? = nil
+        for folder in [directory] + ["legacy-systemAudio", "legacy-microphone"].map({ directory.appendingPathComponent($0) }) {
+            let chunks = try AudioArchiveWriter.chunks(in: folder)
+            failed += try AudioArchiveWriter.corruptUnits(in: folder).count
+            for chunk in chunks {
+                total += 1
+                let bytes = size(folder.appendingPathComponent(chunk.fileName))
+                if chunk.kind == "microphone" { microphoneBytes += bytes } else { systemBytes += bytes }
+                let receipt = folder.appendingPathComponent("\(chunk.id).done")
+                if FileManager.default.fileExists(atPath: receipt.path) {
+                    completed += 1
+                    provider = (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: receipt)))?["provider"] ?? provider
+                }
+                if FileManager.default.fileExists(atPath: folder.appendingPathComponent("\(chunk.id).error").path) { failed += 1 }
+            }
+        }
         let hasTranscript = !(try store.transcripts(meetingId: meetingId)).isEmpty
         let job = try store.latestAnalysisJob(meetingId: meetingId, kind: "transcribe")
+        let live = try store.meeting(id: meetingId)?.status == .capturing
         let state: SummaryProgressState
         if let job, job.status != .completed {
             switch job.status {
@@ -67,13 +107,28 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
             case .failed: state = .failed
             case .completed: state = .completed
             }
-        } else { state = hasTranscript ? .completed : .notStarted }
-        return .init(state: state, retryCount: job?.retryCount ?? 0, error: job?.error,
+        } else if failed > 0 { state = .failed }
+        else if live || total > completed { state = .queued }
+        else { state = total > 0 || hasTranscript ? .completed : .notStarted }
+        let archiveErrors = (try? JSONDecoder().decode([String].self, from: Data(contentsOf: directory.appendingPathComponent("errors.json"))))?.last
+        return .init(state: state, retryCount: job?.retryCount ?? 0, error: job?.error ?? archiveErrors,
                      availableAt: job?.availableAt, hasSystemAudio: systemBytes > 0,
-                     hasMicrophoneAudio: microphoneBytes > 0, archivedBytes: systemBytes + microphoneBytes)
+                     hasMicrophoneAudio: microphoneBytes > 0, archivedBytes: systemBytes + microphoneBytes,
+                     totalChunks: total, completedChunks: completed, failedChunks: failed, provider: provider,
+                     isCapturing: live)
     }
+
     public func enqueue(meetingId: String, kind: String) throws {
         let priority = kind == "transcribe" ? 3 : kind == "summarize" ? 2 : 1
+        if kind == "transcribe" {
+            let rerunAll = try store.latestAnalysisJob(meetingId: meetingId, kind: kind)?.status == .completed
+            let directory = evidenceRoot.appendingPathComponent(meetingId).appendingPathComponent("Audio")
+            for folder in [directory] + ["legacy-systemAudio", "legacy-microphone"].map({ directory.appendingPathComponent($0) }) {
+                for chunk in try AudioArchiveWriter.chunks(in: folder, recoverOpen: true) {
+                    for ext in ["error", "attempt"] + (rerunAll ? ["done"] : []) { try? FileManager.default.removeItem(at: folder.appendingPathComponent("\(chunk.id).\(ext)")) }
+                }
+            }
+        }
         _ = try store.enqueueIfNeeded(AnalysisJob(meetingId: meetingId, kind: kind, priority: priority))
     }
 
@@ -118,6 +173,13 @@ public protocol CaptureAPIControlling: Sendable {
 public protocol MeetingPipelineControlling: Sendable {
     func start(meeting: Meeting, captureConfiguration: CaptureConfiguration) async throws
     func stop() async throws
+    var failure: String? { get async }
+    var captureEndedUnexpectedly: Bool { get async }
+}
+
+public extension MeetingPipelineControlling {
+    var failure: String? { get async { nil } }
+    var captureEndedUnexpectedly: Bool { get async { false } }
 }
 
 extension MeetingPipeline: MeetingPipelineControlling {}
@@ -193,6 +255,17 @@ public actor LocalCaptureController: CaptureAPIControlling {
 
     public func snapshot() async -> APICaptureSnapshot {
         let metrics = await adapter.metricsSnapshot()
+        let pipelineError = await pipeline?.failure
+        if let pipelineError { lastError = pipelineError }
+        if status == .capturing, await pipeline?.captureEndedUnexpectedly == true {
+            do { try await stop() } catch { lastError = error.localizedDescription }
+            lastError = pipelineError ?? lastError
+            status = .failed
+        }
+        if let meetingID {
+            let directory = evidenceRoot.appendingPathComponent(meetingID)
+            try? JSONEncoder().encode(metrics).write(to: directory.appendingPathComponent("capture-metrics.json"), options: .atomic)
+        }
         return .init(status: status, meetingId: meetingID, videoFrames: metrics.screenFrames,
                      systemAudioRms: Self.linearRMS(metrics.systemAudioRMSDB),
                      microphoneRms: Self.linearRMS(metrics.microphoneRMSDB), error: lastError)

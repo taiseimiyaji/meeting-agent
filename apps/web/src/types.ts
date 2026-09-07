@@ -64,17 +64,21 @@ export interface TranscriptionProgress extends SummaryProgress {
   hasSystemAudio: boolean;
   hasMicrophoneAudio: boolean;
   archivedBytes: number;
+  totalChunks?: number; completedChunks?: number; failedChunks?: number; provider?: string; isCapturing?: boolean;
 }
 export type MeetingDetail = Meeting;
 export interface MeetingPage { items: Meeting[]; nextCursor?: string | null; }
 export interface Timeline { transcript: TranscriptEvent[]; screens: ScreenEvent[]; }
 export interface Settings {
-  sttProvider: "apple_speech";
-  summaryProvider: "apple_foundation_models" | "codex";
+  sttProvider: "apple_speech" | "speech_analyzer" | "whisperkit";
+  summaryProvider: "local_heuristic" | "apple_foundation_models";
   retentionDays: number;
   recoveryMode: boolean;
 }
 export type ServerEvent =
+  | { type: "data_changed" }
+  | { type: "capture"; capture: CaptureStatus }
+  | { type: "timeline_changed"; meetingId: string }
   | { type: "capture.started" | "capture.stopped"; payload: CaptureStatus }
   | { type: "transcript.partial" | "transcript.final"; meetingId: string; payload: TranscriptEvent }
   | { type: "screen.changed" | "screen.analyzed"; meetingId: string; payload: ScreenEvent }

@@ -7,6 +7,52 @@ servers:
 security:
   - sessionToken: []
 paths:
+  /settings:
+    get:
+      responses:
+        "200":
+          description: Persisted local processing settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Settings" }
+    post:
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Settings" }
+      responses:
+        "200": { description: Settings saved }
+        "400": { description: Unsupported provider or retention value }
+  /settings/prepare-speech-model:
+    post:
+      description: Download assets for the saved local STT provider. Does not upload meeting audio.
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "200": { description: Model ready }
+        "409": { description: Provider unavailable on this OS }
+  /meetings/{meetingId}/transcription/status:
+    get:
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+      responses:
+        "200":
+          description: Audio unit completion and recovery progress
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TranscriptionProgress" }
+  /meetings/{meetingId}/transcribe:
+    post:
+      description: Retry failed units; a completed job can be rerun with the currently selected provider. Existing text is retained until replacement succeeds.
+      parameters:
+        - $ref: "#/components/parameters/MeetingId"
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "202": { description: Job queued }
+        "409": { description: Capture or transcription already active }
   /health:
     get:
       security: []
@@ -84,6 +130,9 @@ paths:
     get:
       parameters:
         - $ref: "#/components/parameters/MeetingId"
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
         - name: afterMs
           in: query
           schema: { type: integer, minimum: 0 }
@@ -244,6 +293,7 @@ components:
       type: object
       required: [transcript, screens]
       properties:
+        nextOffset: { type: [integer, "null"], minimum: 0 }
         transcript:
           type: array
           items: { $ref: "#/components/schemas/TranscriptEvent" }
@@ -275,3 +325,25 @@ components:
         retryCount: { type: integer, minimum: 0 }
         error: { type: [string, "null"] }
         availableAt: { type: [string, "null"], format: date-time }
+    Settings:
+      type: object
+      required: [sttProvider, summaryProvider, retentionDays, recoveryMode]
+      properties:
+        sttProvider: { enum: [apple_speech, speech_analyzer, whisperkit] }
+        summaryProvider: { enum: [local_heuristic, apple_foundation_models] }
+        retentionDays: { enum: [0, 7, 30, 90, 365], description: Zero disables automatic deletion }
+        recoveryMode: { const: true }
+    TranscriptionProgress:
+      allOf:
+        - $ref: "#/components/schemas/SummaryProgress"
+        - type: object
+          required: [hasSystemAudio, hasMicrophoneAudio, archivedBytes, totalChunks, completedChunks, failedChunks, isCapturing]
+          properties:
+            hasSystemAudio: { type: boolean }
+            hasMicrophoneAudio: { type: boolean }
+            archivedBytes: { type: integer, minimum: 0 }
+            totalChunks: { type: integer, minimum: 0 }
+            completedChunks: { type: integer, minimum: 0 }
+            failedChunks: { type: integer, minimum: 0 }
+            isCapturing: { type: boolean }
+            provider: { type: [string, "null"] }

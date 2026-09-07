@@ -27,6 +27,16 @@ final class AgentViewModel: ObservableObject {
         self.apiCredentials = apiCredentials
         self.permissionProvider = permissionProvider
         Task { await refresh() }
+        metricsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { break }
+                let snapshot = await self.capture.snapshot()
+                self.isCapturing = snapshot.status == .capturing || snapshot.status == .stopping
+                self.errorMessage = snapshot.error
+                self.metrics = await self.capture.metricsSnapshot()
+                do { try await Task.sleep(for: .seconds(1)) } catch { break }
+            }
+        }
     }
 
     deinit { metricsTask?.cancel() }
@@ -85,18 +95,7 @@ final class AgentViewModel: ObservableObject {
         do {
             try await capture.start(targetID: selectedWindowID.map(String.init))
             isCapturing = true
-            if let directory = try? AgentEnvironment.prepareDataDirectory() {
-                try? await diagnostics.start(in: directory)
-            }
-            metricsTask?.cancel()
-            metricsTask = Task { [weak self] in
-                while !Task.isCancelled {
-                    guard let self else { return }
-                    self.metrics = await self.capture.metricsSnapshot()
-                    try? await self.diagnostics.append(self.metrics)
-                    try? await Task.sleep(for: .seconds(1))
-                }
-            }
+
         } catch {
             errorMessage = error.localizedDescription
             AgentEnvironment.logger.error("Capture failed to start: \(error.localizedDescription, privacy: .public)")
@@ -109,9 +108,6 @@ final class AgentViewModel: ObservableObject {
             errorMessage = error.localizedDescription
             AgentEnvironment.logger.error("Capture failed to stop: \(error.localizedDescription, privacy: .public)")
         }
-        metricsTask?.cancel()
-        metricsTask = nil
-        try? await diagnostics.stop()
         metrics = await capture.metricsSnapshot()
         isCapturing = false
     }
