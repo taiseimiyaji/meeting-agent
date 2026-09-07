@@ -195,7 +195,7 @@ public final class MeetingStore: @unchecked Sendable {
 
     public func timeline(meetingId: String) throws -> Timeline? {
         guard let meeting = try meeting(id: meetingId) else { return nil }
-        return Timeline(meeting: meeting, transcripts: try transcripts(meetingId: meetingId), screens: try screens(meetingId: meetingId))
+        return Timeline(meeting: meeting, transcripts: TranscriptEchoDetector.annotate(try transcripts(meetingId: meetingId)), screens: try screens(meetingId: meetingId))
     }
 
     public func enqueue(_ job: AnalysisJob) throws {

@@ -34,6 +34,7 @@ export interface TranscriptEvent {
   source: "microphone" | "system_audio" | "imported";
   isFinal: boolean;
   screenRefs: ScreenRef[];
+  possibleEchoOf?: string | null;
 }
 export interface ScreenEvent {
   id: string;
