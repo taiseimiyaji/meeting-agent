@@ -68,7 +68,9 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
             case .failed: state = .failed
             }
         } else { state = hasSummary ? .completed : .notStarted }
-        return .init(state: state, retryCount: job?.retryCount ?? 0, error: job?.error, availableAt: job?.availableAt)
+        var result = SummaryProgressResponse(state: state, retryCount: job?.retryCount ?? 0, error: job?.error, availableAt: job?.availableAt)
+        result.provider = try store.activeSummaryProvider(meetingId: meetingId)
+        return result
     }
     public func transcriptionProgress(meetingId: String) throws -> TranscriptionProgressResponse {
         let directory = evidenceRoot.appendingPathComponent(meetingId).appendingPathComponent("Audio")

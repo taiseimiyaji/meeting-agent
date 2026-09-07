@@ -9,6 +9,7 @@ public enum SummaryProgressState: String, Codable, Sendable {
 }
 
 public struct SummaryProgressResponse: Codable, Sendable, Equatable {
+    public var provider: String?
     public let state: SummaryProgressState
     public let retryCount: Int
     public let error: String?

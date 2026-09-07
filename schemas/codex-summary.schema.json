@@ -8,7 +8,8 @@
     "actionItems",
     "openQuestions",
     "topics",
-    "speakerAttributions"
+    "speakerAttributions",
+    "discussions"
   ],
   "properties": {
     "summary": {
@@ -70,6 +71,32 @@
           },
           "reason": {
             "type": "string"
+          }
+        }
+      }
+    },
+    "discussions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "summary",
+          "evidenceIds"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "evidenceIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       }

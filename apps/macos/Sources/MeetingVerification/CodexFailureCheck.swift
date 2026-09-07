@@ -6,6 +6,13 @@ func verifyCodexFailurePaths() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("codex-failure-fixture-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
+    let nodeBin = root.appendingPathComponent(".nvm/versions/node/v22.0.0/bin")
+    try FileManager.default.createDirectory(at: nodeBin, withIntermediateDirectories: true)
+    let candidates = CodexRunner.executableCandidates(home: root.path, path: "/custom/bin:relative::/custom/bin")
+    try check(candidates.contains(nodeBin.appendingPathComponent("codex").path), "GUI discovery includes nvm without terminal PATH")
+    try check(candidates.filter { $0 == "/custom/bin/codex" }.count == 1 && !candidates.contains("relative/codex"), "CLI discovery accepts absolute PATH entries once")
+    let isolated = try CodexRunner(executable: URL(fileURLWithPath: "/usr/bin/false"), environment: ["HOME": root.path])
+    try check(isolated.environment["HOME"] != root.path, "inherited sandbox HOME cannot redirect Codex discovery or login")
     let input = CodexMeetingInput(transcripts: [.init(id: "t1", meetingId: "test", timeRange: .init(startedAtMs: 0, endedAtMs: 1000), text: "検証用の発話", source: .system, isFinal: true)], screens: [], omittedScreenCount: 0)
     try JSONEncoder().encode(input).write(to: root.appendingPathComponent("input.json"))
     let executable = root.appendingPathComponent("fixture-codex")

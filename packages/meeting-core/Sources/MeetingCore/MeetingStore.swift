@@ -330,6 +330,12 @@ public final class MeetingStore: @unchecked Sendable {
         return values
     }
 
+    public func activeSummaryProvider(meetingId: String) throws -> String? {
+        var provider: String?
+        try query("SELECT provider FROM summaries WHERE meeting_id=? AND is_active=1 ORDER BY created_at DESC LIMIT 1", [.text(meetingId)]) { provider = $0.text(0) }
+        return provider
+    }
+
     public func activeSummary(meetingId: String) throws -> MeetingSummary? {
         var value: MeetingSummary?
         try query("SELECT summary,payload_json FROM summaries WHERE meeting_id=? AND is_active=1 ORDER BY created_at DESC LIMIT 1", [.text(meetingId)]) { row in

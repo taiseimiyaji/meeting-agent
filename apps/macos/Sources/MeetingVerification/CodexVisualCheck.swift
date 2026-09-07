@@ -21,13 +21,18 @@ func verifyCodexVisualSummary(helper: URL) async throws {
     }
     let speech = [
         MeetingCore.TranscriptEvent(id: "speech-1", meetingId: meeting.id, timeRange: .init(startedAtMs: 1000, endedAtMs: 2000), text: "公開日は9月14日に決定します。", source: .system, isFinal: true),
-        MeetingCore.TranscriptEvent(id: "speech-2", meetingId: meeting.id, timeRange: .init(startedAtMs: 10000, endedAtMs: 11000), text: "予算は次回相談しましょう。", source: .system, isFinal: true)
+        MeetingCore.TranscriptEvent(id: "speech-2", meetingId: meeting.id, timeRange: .init(startedAtMs: 10000, endedAtMs: 11000), text: "予算は次回相談しましょう。", source: .system, isFinal: true),
+        MeetingCore.TranscriptEvent(id: "speech-3", meetingId: meeting.id, timeRange: .init(startedAtMs: 12000, endedAtMs: 20000), text: "負荷試験が終わっていないため、先ほどの9月14日公開は撤回し、9月21日公開に変更することで合意しました。", source: .system, isFinal: true),
+        MeetingCore.TranscriptEvent(id: "speech-4", meetingId: meeting.id, timeRange: .init(startedAtMs: 21000, endedAtMs: 29000), text: "田中さんが9月18日までに負荷試験を実施し、結果を共有する担当になりました。予算の上限額はまだ決まっていません。", source: .system, isFinal: true)
     ]
     let (summary, model) = try await CodexCompanion.generate(timeline: .init(meeting: meeting, transcripts: speech, screens: screens), evidenceRoot: root, includeScreens: true, helper: helper)
-    try check(summary.decisions.contains { $0.evidenceIds.contains("speech-1") }, "live Codex decision cites the actual utterance")
+    try check(summary.decisions.contains { $0.evidenceIds.contains("speech-3") && $0.text.contains("21") }, "live Codex decision cites the actual utterance")
     try check(summary.openQuestions.contains { $0.evidenceIds.contains("speech-2") }, "live Codex preserves unresolved budget")
     try check(summary.speakerAttributions?.contains { $0.transcriptId == "speech-1" && $0.name.contains("田中") } == true, "live Codex reads the active speaker's Japanese name from two screenshots")
     try check(summary.speakerAttributions?.contains { $0.transcriptId == "speech-2" } == false, "gallery without a speaking indicator stays unknown")
+    try check(!summary.decisions.contains { $0.text.contains("14") && !$0.text.contains("21") }, "withdrawn release date is not saved as the final decision")
+    try check(summary.actionItems.contains { $0.assignee?.contains("田中") == true && $0.evidenceIds.contains("speech-4") }, "minutes preserve explicit action owner and evidence")
+    try check(summary.discussions?.contains { $0.evidenceIds.contains("speech-3") && $0.summary.contains("負荷") } == true, "minutes explain why the release decision changed")
     let store = try MeetingStore(path: root.appendingPathComponent("fixture.sqlite").path)
     try store.save(meeting)
     try store.saveSummary(.init(meetingId: meeting.id, provider: "codex_chatgpt", model: model, value: summary))
