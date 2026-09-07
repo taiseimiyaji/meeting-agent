@@ -1,0 +1,50 @@
+[
+  {
+    "title": "1. P1: DBに文字が入ってもライブ表示が更新されない",
+    "url": "https://github.com/taiseimiyaji/meeting-agent/issues/18"
+  },
+  {
+    "title": "2. P1: 認識エラー・final後にタスクを再開しない",
+    "url": "https://github.com/taiseimiyaji/meeting-agent/issues/19"
+  },
+  {
+    "title": "3. P1: STTが起動しなければ復旧用の録音も開始できない",
+    "url": "https://github.com/taiseimiyaji/meeting-agent/issues/20"
+  },
+  {
+    "title": "4. P1: 一部だけ文字が残ると自動復旧しない",
+    "url": "https://github.com/taiseimiyaji/meeting-agent/issues/21"
+  },
+  {
+    "title": "5. P1: 保存音声からの復旧も単一障害で全体が失敗する",
+    "url": "https://github.com/taiseimiyaji/meeting-agent/issues/22"
+  },
+  {
+    "title": "6. P1: 復旧用音声自体の欠落が観測できない",
+    "url": "https://github.com/taiseimiyaji/meeting-agent/issues/23"
+  },
+  {
+    "title": "7. P2: 停止処理はdrain完了を保証していない",
+    "url": "https://github.com/taiseimiyaji/meeting-agent/issues/24"
+  },
+  {
+    "title": "8. P2: 復旧後のタイムライン精度と既存結果の保護が不足",
+    "url": "https://github.com/taiseimiyaji/meeting-agent/issues/25"
+  },
+  {
+    "title": "9. P2: 収録異常とUI操作の失敗が十分表示されない",
+    "url": "https://github.com/taiseimiyaji/meeting-agent/issues/26"
+  },
+  {
+    "title": "10. P2: 設定画面のProvider選択が実処理につながっていない",
+    "url": "https://github.com/taiseimiyaji/meeting-agent/issues/27"
+  },
+  {
+    "title": "P1: 録音区間を永続化し準リアルタイム文字起こしと終了後補完を実装する",
+    "url": "https://github.com/taiseimiyaji/meeting-agent/issues/28"
+  },
+  {
+    "title": "P2: ローカルSTT候補を統合・比較し長時間E2E評価を整備する",
+    "url": "https://github.com/taiseimiyaji/meeting-agent/issues/29"
+  }
+]
