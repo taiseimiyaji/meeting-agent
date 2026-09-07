@@ -15,7 +15,7 @@ public enum MeetingAnalysisRuntimeError: LocalizedError {
         case .meetingNotFound(let id): "Meeting \(id) was not found."
         case .unsafeMeetingID(let id): "Meeting ID is unsafe for export: \(id)"
         case .audioArchiveMissing(let id): "No saved audio is available for meeting \(id)."
-        case .transcriptionEmpty(let id): "Speech Recognition returned no text for meeting \(id)."
+        case .transcriptionEmpty: "音声から文字を認識できませんでした。保存音声を確認し、認識モデルを変更するか再実行してください。"
         }
     }
 }
@@ -66,7 +66,8 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
         for meeting in try store.meetings(limit: 10_000) {
             guard [.completed, .partiallyCompleted, .interrupted].contains(meeting.status),
                   try store.activeSummary(meetingId: meeting.id) == nil else { continue }
-            if (try? Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot)) ?? true { continue }
+            if (try? Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot)) ?? true,
+               try store.latestAnalysisJob(meetingId: meeting.id, kind: "transcribe")?.status != .failed { continue }
             if try store.latestAnalysisJob(meetingId: meeting.id, kind: "summarize")?.status == .failed { continue }
             if try store.enqueueIfNeeded(.init(meetingId: meeting.id, kind: "summarize", priority: 2)) { count += 1 }
         }
@@ -123,15 +124,25 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
             guard let timeline = try store.timeline(meetingId: job.meetingId) else {
                 throw MeetingAnalysisRuntimeError.meetingNotFound(job.meetingId)
             }
-            guard let meeting = try store.meeting(id: job.meetingId),
-                  ![.capturing, .finalizing].contains(meeting.status),
-                  try !Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot) else {
-                throw MeetingAnalysisRuntimeError.transcriptionEmpty(job.meetingId)
+            guard let meeting = try store.meeting(id: job.meetingId) else { throw MeetingAnalysisRuntimeError.meetingNotFound(job.meetingId) }
+            guard ![.capturing, .finalizing].contains(meeting.status) else {
+                throw AnalysisDeferred("録音の終了を待っています。")
+            }
+            let pending = try Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot)
+            let transcription = try store.latestAnalysisJob(meetingId: job.meetingId, kind: "transcribe")
+            if pending && transcription?.status != .failed {
+                throw AnalysisDeferred("文字起こしの完了を待っています。")
+            }
+            guard timeline.transcripts.contains(where: { $0.isFinal && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
+                throw AnalysisRejected("要約できる確定済みの文字起こしがありません。音声の文字起こしを復旧してから再実行してください。")
             }
             var summary = HierarchicalHeuristicSummarizer().summarize(timeline)
             let selected = try settings.load().summaryProvider
             if selected == "apple_foundation_models" {
                 summary.summary = try await FoundationSummary.generate(timeline: timeline)
+            }
+            if pending {
+                summary.summary = "【一部の音声が未文字起こし】確定済みの発話だけから作成した要約です。\n\n" + summary.summary
             }
             try store.saveSummary(.init(
                 meetingId: job.meetingId,

@@ -1,6 +1,16 @@
 import Foundation
 import MeetingCore
 
+public struct AnalysisDeferred: Error, Sendable {
+    public let reason: String
+    public init(_ reason: String) { self.reason = reason }
+}
+
+public struct AnalysisRejected: LocalizedError, Sendable {
+    public let errorDescription: String?
+    public init(_ message: String) { errorDescription = message }
+}
+
 public typealias PersistentAnalysisHandler = @Sendable (MeetingCore.AnalysisJob) async throws -> Void
 
 public enum PersistentAnalysisWorkerError: Error, Equatable {
@@ -38,13 +48,16 @@ public actor PersistentAnalysisWorker {
             guard let handler = handlers[job.kind] else { throw PersistentAnalysisWorkerError.noHandler(job.kind) }
             try await handler(job)
             try store.completeAnalysisJob(id: job.id, now: now)
+        } catch let deferred as AnalysisDeferred {
+            try store.deferAnalysisJob(id: job.id, reason: deferred.reason, availableAt: now.addingTimeInterval(10), now: now)
         } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             let nextAttempt = job.retryCount + 1
-            if nextAttempt >= retryPolicy.maximumAttempts || error is PersistentAnalysisWorkerError {
-                try store.failAnalysisJob(id: job.id, error: String(describing: error), now: now)
+            if nextAttempt >= retryPolicy.maximumAttempts || error is PersistentAnalysisWorkerError || error is AnalysisRejected {
+                try store.failAnalysisJob(id: job.id, error: message, now: now)
             } else {
                 let delay = retryPolicy.delay(afterAttempt: nextAttempt)
-                try store.retryAnalysisJob(id: job.id, error: String(describing: error), availableAt: now.addingTimeInterval(delay.timeInterval), now: now)
+                try store.retryAnalysisJob(id: job.id, error: message, availableAt: now.addingTimeInterval(delay.timeInterval), now: now)
             }
         }
         return true
