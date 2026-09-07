@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 import Foundation
 import MeetingAnalysis
+import CodexSupport
 import MeetingCapture
 import MeetingCore
 
@@ -138,7 +139,15 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
             }
             timeline.transcripts.removeAll { $0.possibleEchoOf != nil }
             var summary = HierarchicalHeuristicSummarizer().summarize(timeline)
-            let selected = try settings.load().summaryProvider
+            let preferences = try settings.load()
+            let selected = preferences.summaryProvider
+            var model = selected == "local_heuristic" ? "hierarchical-v1" : "system-language-model"
+            if selected == "codex_chatgpt" {
+                do {
+                    (summary, model) = try await CodexCompanion.generate(timeline: timeline, evidenceRoot: evidenceRoot, includeScreens: preferences.codexIncludeScreens ?? true)
+                } catch is CancellationError { throw CancellationError() }
+                catch { throw AnalysisRejected(error.localizedDescription) }
+            }
             if selected == "apple_foundation_models" {
                 summary.summary = try await FoundationSummary.generate(timeline: timeline)
             }
@@ -148,8 +157,8 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
             try store.saveSummary(.init(
                 meetingId: job.meetingId,
                 provider: selected,
-                model: selected == "local_heuristic" ? "hierarchical-v1" : "system-language-model",
-                promptVersion: "heuristic-sections-v1",
+                model: model,
+                promptVersion: selected == "codex_chatgpt" ? "codex-evidence-v1" : "heuristic-sections-v1",
                 value: summary
             ))
         }

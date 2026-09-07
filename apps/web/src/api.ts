@@ -89,6 +89,10 @@ export const api = {
     if (!useMock) return request("/api/settings", { method: "POST", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {}, body: JSON.stringify(value) });
     mock.updateSettings(value); return value;
   },
+  async codexStatus(): Promise<{ error: string }> {
+    if (!useMock) return request("/api/settings/codex-status");
+    return { error: "デモ表示です。実際のCodex認証は確認していません。" };
+  },
   async prepareSpeechModel(): Promise<void> {
     if (!useMock) await request("/api/settings/prepare-speech-model", { method: "POST", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {} });
   },

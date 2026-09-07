@@ -1,15 +1,5 @@
-# Optional Codex summarizer helper
+# Retired Node companion spike
 
-This package is an optional companion; it is not required by the native capture agent.
+Production integration lives in `apps/macos/Sources/CodexSupport`, `MeetingCodexHelper`, and `MeetingPipeline/CodexCompanion.swift`. The desktop app bundles a Swift helper and calls the installed Codex CLI with ChatGPT-only authentication. It does not need Node or copy login credentials.
 
-It copies only user-approved meeting artifacts to a per-job temporary directory and runs Codex with:
-
-- an ephemeral thread;
-- a read-only sandbox;
-- no interactive approvals;
-- a structured output schema;
-- the meeting-scoped directory as its working directory.
-
-The caller must present and persist `ExternalProcessingConsent` before invoking the helper. Always call `cleanupIsolatedInput` after success or failure.
-
-The helper intentionally does not inherit arbitrary environment variables. Existing Codex login is discovered by the Codex runtime itself.
+`runCodex` in this prototype is disabled so it cannot bypass the production authentication and evidence checks. The input-copy utilities remain for existing fixture tests. See [ADR 0001](../../docs/adr/0001-codex-helper.md).

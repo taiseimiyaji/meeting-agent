@@ -22,6 +22,7 @@ ensure_not_running
 
 cd "$package_dir"
 swift build --disable-sandbox -c "$configuration" --product MeetingAgent
+swift build --disable-sandbox -c "$configuration" --product MeetingCodexHelper
 bin_dir=$(swift build --disable-sandbox -c "$configuration" --show-bin-path)
 
 if [ ! -d "$web_dir/node_modules" ]; then
@@ -54,5 +55,12 @@ else
   echo "Signing with stable identity: $signing_identity"
 fi
 
+helper_dir="$app_dir/Contents/Helpers/MeetingCodexHelper.app"
+mkdir -p "$helper_dir/Contents/MacOS"
+cp "$bin_dir/MeetingCodexHelper" "$helper_dir/Contents/MacOS/MeetingCodexHelper"
+cp "$package_dir/Resources/CodexHelper-Info.plist" "$helper_dir/Contents/Info.plist"
+# LaunchServices starts this companion independently of the capture sandbox.
+# It owns no credentials: only the installed Codex CLI accesses its login.
+codesign --force --sign "$signing_identity" "$helper_dir"
 codesign --force --sign "$signing_identity" --entitlements "$package_dir/Resources/MeetingAgent.entitlements" "$app_dir"
 echo "Meeting Agent is ready: $app_dir"

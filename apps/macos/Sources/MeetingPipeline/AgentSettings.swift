@@ -3,12 +3,13 @@ import Foundation
 public struct AgentSettings: Codable, Sendable, Equatable {
     public var sttProvider: String = "apple_speech"
     public var summaryProvider: String = "local_heuristic"
+    public var codexIncludeScreens: Bool? = true
     public var retentionDays: Int = 0
     public var recoveryMode: Bool = true
     public init() { if #available(macOS 26.0, *) { sttProvider = "speech_analyzer" } }
     public func validate() throws {
         guard ["apple_speech", "speech_analyzer", "whisperkit"].contains(sttProvider),
-              ["local_heuristic", "apple_foundation_models"].contains(summaryProvider),
+              ["local_heuristic", "apple_foundation_models", "codex_chatgpt"].contains(summaryProvider),
               [0, 7, 30, 90, 365].contains(retentionDays), recoveryMode else {
             throw CocoaError(.validationMissingMandatoryProperty)
         }

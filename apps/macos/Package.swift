@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "LocalAPI", targets: ["LocalAPI"]),
         .executable(name: "MeetingVerification", targets: ["MeetingVerification"]),
         .executable(name: "MeetingAgent", targets: ["MeetingAgentApp"]),
+        .executable(name: "MeetingCodexHelper", targets: ["MeetingCodexHelper"]),
     ],
     dependencies: [
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", exact: "0.15.0"),
@@ -17,10 +18,13 @@ let package = Package(
         .package(path: "../../packages/meeting-analysis"),
     ],
     targets: [
+        .target(name: "CodexSupport", dependencies: [.product(name: "MeetingCore", package: "meeting-core")]),
+        .executableTarget(name: "MeetingCodexHelper", dependencies: ["CodexSupport"]),
         .target(name: "MeetingCapture", dependencies: [.product(name: "WhisperKit", package: "WhisperKit")]),
         .target(
             name: "MeetingPipeline",
             dependencies: [
+                "CodexSupport",
                 "MeetingCapture",
                 .product(name: "MeetingCore", package: "meeting-core"),
                 .product(name: "MeetingAnalysis", package: "meeting-analysis"),
@@ -31,7 +35,7 @@ let package = Package(
             dependencies: ["MeetingCapture", "MeetingPipeline", .product(name: "MeetingCore", package: "meeting-core")]
         ),
         .executableTarget(name: "MeetingAgentApp", dependencies: ["MeetingCapture", "MeetingPipeline", "LocalAPI", .product(name: "MeetingCore", package: "meeting-core")]),
-        .executableTarget(name: "MeetingVerification", dependencies: ["MeetingCapture", "MeetingPipeline", "LocalAPI", .product(name: "MeetingCore", package: "meeting-core")]),
+        .executableTarget(name: "MeetingVerification", dependencies: ["CodexSupport", "MeetingCapture", "MeetingPipeline", "LocalAPI", .product(name: "MeetingCore", package: "meeting-core")]),
         .testTarget(name: "MeetingCaptureTests", dependencies: ["MeetingCapture"]),
         .testTarget(
             name: "MeetingPipelineTests",
