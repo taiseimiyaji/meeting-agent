@@ -43,7 +43,17 @@ export const api = {
   async captureStatus(): Promise<CaptureStatus> { if (!useMock) return request("/api/capture"); await pause(); return mock.capture; },
   async meetings(): Promise<Meeting[]> { if (!useMock) return (await request<MeetingPage>("/api/meetings?limit=100")).items; await pause(); return [...mock.meetings]; },
   async meeting(id: string): Promise<MeetingDetail> { if (!useMock) return request(`/api/meetings/${id}`); await pause(); const value = mock.detail(id); if (!value) throw new Error("Meeting not found"); return value; },
-  async timeline(id: string): Promise<Timeline> { if (!useMock) return request(`/api/meetings/${id}/timeline?limit=1000`); await pause(); return { transcript: mock.transcripts[id] ?? [], screens: mock.screens[id] ?? [] }; },
+  async timeline(id: string): Promise<Timeline> {
+    if (useMock) { await pause(); return { transcript: mock.transcripts[id] ?? [], screens: mock.screens[id] ?? [] }; }
+    const result: Timeline = { transcript: [], screens: [] };
+    let offset = 0;
+    while (true) {
+      const page = await request<Timeline & { nextOffset?: number | null }>(`/api/meetings/${id}/timeline?limit=1000${offset ? `&offset=${offset}` : ""}`);
+      result.transcript.push(...page.transcript); result.screens.push(...page.screens);
+      if (page.nextOffset == null || page.nextOffset <= offset) return result;
+      offset = page.nextOffset;
+    }
+  },
   async transcript(id: string): Promise<TranscriptEvent[]> { return (await this.timeline(id)).transcript; },
   async screens(id: string): Promise<ScreenEvent[]> { return (await this.timeline(id)).screens; },
   async screenImage(path: string): Promise<Blob> {
@@ -74,8 +84,14 @@ export const api = {
   },
   async startCapture(targetId?: string): Promise<CaptureStatus> { if (!useMock) { await request<void>("/api/capture/start", { method: "POST", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {}, body: targetId ? JSON.stringify({ targetId }) : undefined }); return this.captureStatus(); } const value = { status: "capturing", meetingId: "mtg-live", videoFrames: 0, systemAudioRms: 0, microphoneRms: 0 } satisfies CaptureStatus; mock.updateCapture(value); return value; },
   async stopCapture(): Promise<CaptureStatus> { if (!useMock) { await request<void>("/api/capture/stop", { method: "POST", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {} }); return this.captureStatus(); } const value = { status: "idle", videoFrames: 0, systemAudioRms: 0, microphoneRms: 0 } satisfies CaptureStatus; mock.updateCapture(value); return value; },
-  async settings(): Promise<Settings> { const saved = localStorage.getItem("meeting-agent.settings"); return saved ? JSON.parse(saved) as Settings : mock.settings; },
-  async saveSettings(value: Settings): Promise<Settings> { localStorage.setItem("meeting-agent.settings", JSON.stringify(value)); mock.updateSettings(value); return value; },
+  async settings(): Promise<Settings> { if (!useMock) return request("/api/settings"); return mock.settings; },
+  async saveSettings(value: Settings): Promise<Settings> {
+    if (!useMock) return request("/api/settings", { method: "POST", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {}, body: JSON.stringify(value) });
+    mock.updateSettings(value); return value;
+  },
+  async prepareSpeechModel(): Promise<void> {
+    if (!useMock) await request("/api/settings/prepare-speech-model", { method: "POST", headers: csrfToken ? { "X-CSRF-Token": csrfToken } : {} });
+  },
 };
 
 export function websocketTokenProtocol(value: string): string {

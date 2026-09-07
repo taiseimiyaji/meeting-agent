@@ -51,6 +51,8 @@ public struct AudioEvent: @unchecked Sendable {
 }
 
 public enum CaptureEvent: @unchecked Sendable {
+    case stopped
+    case failure(String)
     case video(VideoFrameEvent)
     case audio(AudioEvent)
 }

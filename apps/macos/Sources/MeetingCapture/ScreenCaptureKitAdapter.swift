@@ -15,6 +15,9 @@ public actor ScreenCaptureKitAdapter: MeetingCaptureAdapter {
     private var stream: SCStream?
     private var output: StreamOutput?
     private var state: CaptureState = .idle
+    private var audioSink: (@Sendable (AudioEvent) -> Void)?
+    public nonisolated var providesStopEvent: Bool { true }
+    public func setAudioSink(_ sink: (@Sendable (AudioEvent) -> Void)?) -> Bool { audioSink = sink; return true }
 
     public init() {
         let pair = AsyncStream<CaptureEvent>.makeStream(bufferingPolicy: .bufferingNewest(256))
@@ -72,7 +75,7 @@ public actor ScreenCaptureKitAdapter: MeetingCaptureAdapter {
             streamConfiguration.sampleRate = 48_000
             streamConfiguration.channelCount = 2
 
-            let output = StreamOutput(clock: clock, metrics: metrics, continuation: continuation)
+            let output = StreamOutput(clock: clock, metrics: metrics, continuation: continuation, audioSink: audioSink)
             let stream = SCStream(filter: filter, configuration: streamConfiguration, delegate: output)
             self.output = output
             self.stream = stream
@@ -83,15 +86,16 @@ public actor ScreenCaptureKitAdapter: MeetingCaptureAdapter {
             try await stream.startCapture()
 
             if configuration.capturesMicrophone {
-                try microphone.start { [clock, metrics, continuation] buffer, presentationTime in
+                try microphone.start { [clock, metrics, continuation, audioSink] buffer, presentationTime in
                     let timestamp = clock.timestamp(for: presentationTime)
-                    continuation.yield(.audio(.init(
+                    let event = AudioEvent(
                         kind: .microphone,
                         timestamp: timestamp,
                         presentationTime: presentationTime,
                         sampleBuffer: nil,
                         pcmBuffer: buffer
-                    )))
+                    )
+                    if let audioSink { audioSink(event) } else { continuation.yield(.audio(event)) }
                     Task { await metrics.record(.microphone, timestamp: timestamp, rmsDB: buffer.rmsDB()) }
                 }
             }
@@ -117,11 +121,15 @@ public actor ScreenCaptureKitAdapter: MeetingCaptureAdapter {
             try await stream.stopCapture()
         } catch {
             await metrics.recordError()
+            await output?.drain()
+            continuation.yield(.stopped)
             self.stream = nil
             output = nil
             state = .idle
             throw error
         }
+        await output?.drain()
+        continuation.yield(.stopped)
         self.stream = nil
         output = nil
         state = .idle
@@ -146,18 +154,27 @@ private final class StreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, @u
     private let clock: CaptureClock
     private let metrics: CaptureMetrics
     private let continuation: AsyncStream<CaptureEvent>.Continuation
+    private let audioSink: (@Sendable (AudioEvent) -> Void)?
 
     init(
         clock: CaptureClock,
         metrics: CaptureMetrics,
-        continuation: AsyncStream<CaptureEvent>.Continuation
+        continuation: AsyncStream<CaptureEvent>.Continuation,
+        audioSink: (@Sendable (AudioEvent) -> Void)?
     ) {
         self.clock = clock
         self.metrics = metrics
         self.continuation = continuation
+        self.audioSink = audioSink
+    }
+
+    func drain() async {
+        await withCheckedContinuation { value in screenQueue.async { value.resume() } }
+        await withCheckedContinuation { value in audioQueue.async { value.resume() } }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        continuation.yield(.failure(error.localizedDescription))
         Task { await metrics.recordError() }
     }
 
@@ -189,13 +206,15 @@ private final class StreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, @u
         case .audio:
             let pcmBuffer = sampleBuffer.makePCMBuffer()
             let rmsDB = pcmBuffer?.rmsDB()
-            continuation.yield(.audio(.init(
+            let event = AudioEvent(
                 kind: .systemAudio,
                 timestamp: timestamp,
                 presentationTime: presentationTime,
                 sampleBuffer: sampleBuffer,
                 pcmBuffer: pcmBuffer
-            )))
+            )
+            if pcmBuffer == nil { Task { await metrics.recordError() } }
+            if let audioSink { audioSink(event) } else { continuation.yield(.audio(event)) }
             Task { await metrics.record(.systemAudio, timestamp: timestamp, rmsDB: rmsDB) }
         case .microphone:
             break // Microphone is captured independently by AVAudioEngine on macOS 14.
@@ -240,7 +259,7 @@ extension AVAudioPCMBuffer {
         let channelCount = Int(format.channelCount)
         for channel in 0..<channelCount {
             for frame in 0..<frameCount {
-                let sample = Double(channels[channel][frame])
+                let sample = Double(format.isInterleaved ? channels[0][frame * channelCount + channel] : channels[channel][frame])
                 sum += sample * sample
             }
         }

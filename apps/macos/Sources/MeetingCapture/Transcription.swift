@@ -98,6 +98,11 @@ public final class AppleSpeechTranscriber: Transcriber, @unchecked Sendable {
     private var task: SFSpeechRecognitionTask?
     private var utteranceID = UUID()
     private var revision = 0
+    private var running = false
+    private var audioSeconds: Double = 0
+    private var originMs: Int64 = 0
+    private var retryAt = Date.distantPast
+    private var failures = 0
 
     public init(
         track: SpeakerTrack,
@@ -140,30 +145,28 @@ public final class AppleSpeechTranscriber: Transcriber, @unchecked Sendable {
         if requiresOnDeviceRecognition, !status.onDeviceRecognitionSupported { throw TranscriberError.recognizerUnavailable }
 
         try lock.withLock {
-            guard task == nil else { throw TranscriberError.alreadyRunning }
-            guard let recognizer = SFSpeechRecognizer(locale: locale) else { throw TranscriberError.recognizerUnavailable }
-            let request = SFSpeechAudioBufferRecognitionRequest()
-            request.shouldReportPartialResults = true
-            request.requiresOnDeviceRecognition = requiresOnDeviceRecognition
-            utteranceID = UUID()
-            revision = 0
-            self.recognizer = recognizer
-            self.request = request
-            task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-                self?.receive(result: result, error: error)
-            }
+            guard !running else { throw TranscriberError.alreadyRunning }
+            running = true; audioSeconds = 0; failures = 0; retryAt = .distantPast
+            try beginRequest()
+
         }
     }
 
     public func consume(_ buffer: AVAudioPCMBuffer) async throws {
         try lock.withLock {
-            guard let request else { throw TranscriberError.notRunning }
-            request.append(buffer)
+            guard running else { throw TranscriberError.notRunning }
+            defer { audioSeconds += Double(buffer.frameLength) / buffer.format.sampleRate }
+            if request == nil {
+                guard failures < 3, Date() >= retryAt else { throw TranscriberError.recognizerUnavailable }
+                try beginRequest()
+            }
+            request?.append(buffer)
         }
     }
 
     public func stop() async {
         let current: (SFSpeechAudioBufferRecognitionRequest?, SFSpeechRecognitionTask?) = lock.withLock {
+            running = false
             let current = (request, task)
             request = nil
             task = nil
@@ -174,27 +177,40 @@ public final class AppleSpeechTranscriber: Transcriber, @unchecked Sendable {
         current.1?.finish()
     }
 
-    private func receive(result: SFSpeechRecognitionResult?, error: Error?) {
-        guard error == nil, let result else { return }
-        let transcription = result.bestTranscription
-        let segments = transcription.segments
-        let (start, end): (Int64, Int64) = if let first = segments.first, let last = segments.last {
-            (Int64(first.timestamp * 1_000), Int64((last.timestamp + last.duration) * 1_000))
-        } else { (0, 0) }
-
-        let event: TranscriptEvent = lock.withLock {
-            revision += 1
-            return .init(
-                utteranceID: utteranceID,
-                revision: revision,
-                track: track,
-                text: transcription.formattedString,
-                startedAtMs: start,
-                endedAtMs: end,
-                isFinal: result.isFinal
-            )
+    private func beginRequest() throws {
+        guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
+            throw TranscriberError.recognizerUnavailable
         }
-        continuation.yield(event)
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        request.requiresOnDeviceRecognition = requiresOnDeviceRecognition
+        utteranceID = UUID(); revision = 0; originMs = Int64(audioSeconds * 1000)
+        let id = utteranceID
+        self.recognizer = recognizer; self.request = request
+        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            self?.receive(result: result, error: error, id: id)
+        }
+    }
+
+    private func receive(result: SFSpeechRecognitionResult?, error: Error?, id: UUID) {
+        let event: TranscriptEvent? = lock.withLock {
+            guard id == utteranceID else { return nil }
+            if error != nil || result?.isFinal == true {
+                request = nil; task = nil; recognizer = nil
+                if error != nil { failures += 1; retryAt = Date().addingTimeInterval(Double(failures)) }
+                else { failures = 0; retryAt = .distantPast }
+            }
+            guard let result else { return nil }
+            let transcription = result.bestTranscription
+            let segments = transcription.segments
+            revision += 1
+            return .init(utteranceID: id, revision: revision, track: track,
+                         text: transcription.formattedString,
+                         startedAtMs: originMs + Int64((segments.first?.timestamp ?? 0) * 1000),
+                         endedAtMs: originMs + Int64((segments.last.map { $0.timestamp + $0.duration } ?? 0) * 1000),
+                         isFinal: result.isFinal)
+        }
+        if let event { continuation.yield(event) }
     }
 
     private static func mapAuthorization(_ status: SFSpeechRecognizerAuthorizationStatus) -> PermissionState {

@@ -11,10 +11,14 @@ public final class LocalAPIServer: @unchecked Sendable {
     private let hub: WebSocketHub
     private let lock = NSLock()
     private var listener: NWListener?
+    private var monitor: Task<Void, Never>?
+    private let repository: any MeetingAPIRepository
+    private let captureController: any CaptureAPIControlling
 
     public init(repository: any MeetingAPIRepository, capture: any CaptureAPIControlling,
                 port: UInt16 = 8765, credentials: APICredentials = .init(), allowedOrigins: Set<String>? = nil,
                 webRoot: URL? = nil) {
+        self.repository = repository; self.captureController = capture
         self.port = port; self.credentials = credentials
         let hub = WebSocketHub(); self.hub = hub
         let hosts = Set(["127.0.0.1:\(port)", "localhost:\(port)"])
@@ -41,11 +45,22 @@ public final class LocalAPIServer: @unchecked Sendable {
             }
             self.listener = listener
             listener.start(queue: queue)
+            monitor = Task { [weak self, repository, captureController] in
+                var version: Int64 = -1
+                var previous: APICaptureSnapshot?
+                while !Task.isCancelled {
+                    let current = repository.changeVersion
+                    if current != version { version = current; await self?.publish(.dataChanged) }
+                    let snapshot = await captureController.snapshot()
+                    if snapshot != previous { previous = snapshot; await self?.publish(.capture(snapshot)) }
+                    do { try await Task.sleep(for: .seconds(1)) } catch { break }
+                }
+            }
         }
     }
 
     public func stop() {
-        lock.withLock { listener?.cancel(); listener = nil }
+        lock.withLock { monitor?.cancel(); monitor = nil; listener?.cancel(); listener = nil }
         Task { await hub.closeAll() }
     }
 

@@ -52,6 +52,8 @@ public final class MeetingStore: @unchecked Sendable {
 
     deinit { if let db { sqlite3_close(db) } }
 
+    public var changeVersion: Int64 { lock.lock(); defer { lock.unlock() }; return sqlite3_total_changes64(db) }
+
     public var schemaVersion: Int {
         Int((try? scalarInt("PRAGMA user_version")) ?? 0)
     }
@@ -112,6 +114,32 @@ public final class MeetingStore: @unchecked Sendable {
             try run("DELETE FROM transcript_events WHERE meeting_id=?", [.text(meetingId)])
             for event in events { try saveTranscriptWithinTransaction(event) }
         }
+    }
+
+    /// One recovered audio unit replaces only its own stable IDs. Other tracks
+    /// and earlier successful units survive retries and failed recognition.
+    public func saveRecoveredTranscript(_ event: TranscriptEvent) throws {
+        try transaction {
+            try run("DELETE FROM transcript_events WHERE id=? AND meeting_id=?", [.text(event.id), .text(event.meetingId)])
+            if !event.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try saveTranscriptWithinTransaction(event)
+            }
+            try run("UPDATE summaries SET is_active=0 WHERE meeting_id=?", [.text(event.meetingId)])
+        }
+    }
+
+    public func retireLegacyTranscripts(meetingId: String, source: AudioSource, keeping ids: [String]) throws {
+        guard !ids.isEmpty else { return }
+        try transaction {
+            let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ",")
+            try run("DELETE FROM transcript_events WHERE meeting_id=? AND source=? AND id NOT IN (\(placeholders))",
+                    [.text(meetingId), .text(source.rawValue)] + ids.map(Value.text))
+            try run("UPDATE summaries SET is_active=0 WHERE meeting_id=?", [.text(meetingId)])
+        }
+    }
+
+    public func deleteMeeting(id: String) throws {
+        try run("DELETE FROM meetings WHERE id=? AND status NOT IN ('capturing','finalizing','analyzing')", [.text(id)])
     }
 
     private func saveTranscriptWithinTransaction(_ event: TranscriptEvent) throws {

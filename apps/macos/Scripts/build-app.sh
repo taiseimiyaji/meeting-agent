@@ -22,6 +22,10 @@ fi
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp "$package_dir/Resources/Info.plist" "$app_dir/Contents/Info.plist"
 cp "$bin_dir/MeetingAgent" "$app_dir/Contents/MacOS/MeetingAgent"
+for resource_bundle in "$bin_dir"/*.bundle; do
+  [ -d "$resource_bundle" ] || continue
+  cp -R "$resource_bundle" "$app_dir/Contents/Resources/"
+done
 rm -rf "$app_dir/Contents/Resources/Web"
 cp -R "$web_dir/dist" "$app_dir/Contents/Resources/Web"
 

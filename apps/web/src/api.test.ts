@@ -133,4 +133,22 @@ describe("OpenAPI client contract", () => {
     expect(websocketTokenProtocol("session-secret")).toBe("token.c2Vzc2lvbi1zZWNyZXQ");
     dispose();
   });
+  it("loads all timeline pages including events after the first 1000", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(response({ transcript: [{ id: "first" }], screens: [], nextOffset: 1000 }))
+      .mockResolvedValueOnce(response({ transcript: [{ id: "last" }], screens: [], nextOffset: null }));
+    vi.stubGlobal("fetch", fetch);
+    const { api } = await import("./api");
+    expect((await api.timeline("m1")).transcript.map(row => row.id)).toEqual(["first", "last"]);
+    expect(fetch).toHaveBeenNthCalledWith(2, "/api/meetings/m1/timeline?limit=1000&offset=1000", expect.anything());
+  });
+
+  it("persists provider settings through the authenticated backend", async () => {
+    const settings = { sttProvider: "speech_analyzer", summaryProvider: "local_heuristic", retentionDays: 0, recoveryMode: true } as const;
+    const fetch = vi.fn().mockResolvedValue(response(settings));
+    vi.stubGlobal("fetch", fetch);
+    const { api } = await import("./api");
+    expect(await api.saveSettings(settings)).toEqual(settings);
+    expect(fetch).toHaveBeenCalledWith("/api/settings", expect.objectContaining({ method: "POST", body: JSON.stringify(settings), headers: expect.objectContaining({ "X-CSRF-Token": "csrf-secret" }) }));
+  });
+
 });

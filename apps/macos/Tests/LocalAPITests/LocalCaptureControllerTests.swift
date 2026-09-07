@@ -104,21 +104,21 @@ private final class DirectoryRecorder: @unchecked Sendable {
 private final class ControllerFakePipeline: MeetingPipelineControlling, @unchecked Sendable {
     enum Failure { case start, stop }
     private let lock = NSLock()
-    private let failure: Failure?
+    private let injectedFailure: Failure?
     private var _startCount = 0
     private var _stopCount = 0
     private var _targetWindowID: UInt32?
     var startCount: Int { lock.withLock { _startCount } }
     var stopCount: Int { lock.withLock { _stopCount } }
     var targetWindowID: UInt32? { lock.withLock { _targetWindowID } }
-    init(failure: Failure?) { self.failure = failure }
+    init(failure: Failure?) { self.injectedFailure = failure }
     func start(meeting: Meeting, captureConfiguration: CaptureConfiguration) async throws {
         lock.withLock { _startCount += 1; _targetWindowID = captureConfiguration.targetWindowID }
-        if failure == .start { throw ControllerTestError.expected }
+        if injectedFailure == .start { throw ControllerTestError.expected }
     }
     func stop() async throws {
         lock.withLock { _stopCount += 1 }
-        if failure == .stop { throw ControllerTestError.expected }
+        if injectedFailure == .stop { throw ControllerTestError.expected }
     }
 }
 

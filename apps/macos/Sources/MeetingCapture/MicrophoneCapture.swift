@@ -14,10 +14,11 @@ final class MicrophoneCapture: @unchecked Sendable {
             guard !running else { throw CaptureError.alreadyRunning }
             let input = engine.inputNode
             let format = input.outputFormat(forBus: 0)
+            guard format.sampleRate > 0, format.channelCount > 0 else { throw CaptureError.invalidSampleBuffer }
             input.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
                 let now = CMClockGetTime(CMClockGetHostTimeClock())
                 guard let ownedBuffer = buffer.deepCopy() else { return }
-                handler(ownedBuffer, now)
+                self.lock.withLock { if self.running { handler(ownedBuffer, now) } }
             }
             engine.prepare()
             do {
@@ -31,13 +32,12 @@ final class MicrophoneCapture: @unchecked Sendable {
     }
 
     func stop() {
-        lock.withLock {
-            guard running else { return }
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-            running = false
-        }
+        let wasRunning = lock.withLock { let value = running; running = false; return value }
+        guard wasRunning else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
     }
+
 }
 
 private extension AVAudioPCMBuffer {

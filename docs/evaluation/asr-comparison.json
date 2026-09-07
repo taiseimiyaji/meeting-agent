@@ -1,0 +1,80 @@
+{
+  "reference": "本日の会議では、文字起こし機能の改善について確認します。音声を確実に保存し、認識に失敗した区間だけを再処理します。次回の会議は金曜日の午後三時です。担当者は田中さんです。",
+  "note": "Synthetic TTS fixture; file processing time includes model loading on the first call. Not live meeting latency or a Japanese accuracy benchmark.",
+  "results": [
+    {
+      "provider": "speech_analyzer",
+      "samples": 3,
+      "elapsedP95Seconds": 0.32048606872558594,
+      "observations": [
+        {
+          "elapsedSeconds": 0.32048606872558594,
+          "endedAtMs": 16473,
+          "iteration": 0,
+          "provider": "speech_analyzer",
+          "residentMemoryBytes": 22118400,
+          "startedAtMs": 0,
+          "text": "本日の会議では、文字を起こし、機能の改善について確認します。音声を確実に保存し、認識に失敗した区間だけを処理します。次回の会議は金曜日の午後 3時です。担当者は田中さんです。",
+          "characterErrorRate": 0.0379746835443038
+        },
+        {
+          "elapsedSeconds": 0.21870100498199463,
+          "endedAtMs": 16473,
+          "iteration": 1,
+          "provider": "speech_analyzer",
+          "residentMemoryBytes": 22740992,
+          "startedAtMs": 0,
+          "text": "本日の会議では、文字を起こし、機能の改善について確認します。音声を確実に保存し、認識に失敗した区間だけを処理します。次回の会議は金曜日の午後 3時です。担当者は田中さんです。",
+          "characterErrorRate": 0.0379746835443038
+        },
+        {
+          "elapsedSeconds": 0.20957505702972412,
+          "endedAtMs": 16473,
+          "iteration": 2,
+          "provider": "speech_analyzer",
+          "residentMemoryBytes": 22839296,
+          "startedAtMs": 0,
+          "text": "本日の会議では、文字を起こし、機能の改善について確認します。音声を確実に保存し、認識に失敗した区間だけを処理します。次回の会議は金曜日の午後 3時です。担当者は田中さんです。",
+          "characterErrorRate": 0.0379746835443038
+        }
+      ]
+    },
+    {
+      "provider": "whisperkit",
+      "samples": 3,
+      "elapsedP95Seconds": 23.614766001701355,
+      "observations": [
+        {
+          "elapsedSeconds": 23.614766001701355,
+          "endedAtMs": 16480,
+          "iteration": 0,
+          "provider": "whisperkit",
+          "residentMemoryBytes": 175341568,
+          "startedAtMs": 0,
+          "text": "本日の会議では、文字起こし、機能の改善について確認します。音声を確実に保存し、認識に失敗した区間だけを採取します。次回の会議は、金曜日の午後3時です。担当者は田中さんです。",
+          "characterErrorRate": 0.05063291139240506
+        },
+        {
+          "elapsedSeconds": 1.2654860019683838,
+          "endedAtMs": 16480,
+          "iteration": 1,
+          "provider": "whisperkit",
+          "residentMemoryBytes": 177815552,
+          "startedAtMs": 0,
+          "text": "本日の会議では、文字起こし、機能の改善について確認します。音声を確実に保存し、認識に失敗した区間だけを採取します。次回の会議は、金曜日の午後3時です。担当者は田中さんです。",
+          "characterErrorRate": 0.05063291139240506
+        },
+        {
+          "elapsedSeconds": 1.268212080001831,
+          "endedAtMs": 16480,
+          "iteration": 2,
+          "provider": "whisperkit",
+          "residentMemoryBytes": 178028544,
+          "startedAtMs": 0,
+          "text": "本日の会議では、文字起こし、機能の改善について確認します。音声を確実に保存し、認識に失敗した区間だけを採取します。次回の会議は、金曜日の午後3時です。担当者は田中さんです。",
+          "characterErrorRate": 0.05063291139240506
+        }
+      ]
+    }
+  ]
+}

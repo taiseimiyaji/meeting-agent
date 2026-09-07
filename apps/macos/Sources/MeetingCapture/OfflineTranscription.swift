@@ -12,7 +12,8 @@ public struct OfflineTranscript: Sendable, Equatable {
     }
 }
 
-public final class AppleSpeechFileTranscriber: @unchecked Sendable {
+public final class AppleSpeechFileTranscriber: FileTranscriber, @unchecked Sendable {
+    public let provider = "apple_speech"
     private let locale: Locale
     private let requiresOnDeviceRecognition: Bool
 
@@ -37,8 +38,11 @@ public final class AppleSpeechFileTranscriber: @unchecked Sendable {
             }
             try audio.read(into: buffer, frameCount: count)
             let chunkURL = temporary.appendingPathComponent("\(results.count).caf")
-            let output = try AVAudioFile(forWriting: chunkURL, settings: audio.processingFormat.settings)
-            try output.write(from: buffer)
+            do {
+                let output = try AVAudioFile(forWriting: chunkURL, settings: audio.processingFormat.settings)
+                try output.write(from: buffer)
+            }
+            try Task.checkCancellation()
             let result = try await transcribeSingle(file: chunkURL)
             let offsetMs = Int64(Double(offsetFrames) / audio.processingFormat.sampleRate * 1_000)
             results.append(.init(text: result.text, startedAtMs: offsetMs + result.startedAtMs,
@@ -63,17 +67,23 @@ public final class AppleSpeechFileTranscriber: @unchecked Sendable {
         let request = SFSpeechURLRecognitionRequest(url: file)
         request.shouldReportPartialResults = false
         request.requiresOnDeviceRecognition = requiresOnDeviceRecognition
-        return try await withCheckedThrowingContinuation { continuation in
-            let gate = RecognitionContinuationGate(continuation)
-            recognizer.recognitionTask(with: request) { result, error in
-                if let error { gate.fail(error); return }
-                guard let result, result.isFinal else { return }
-                let segments = result.bestTranscription.segments
-                let start = Int64((segments.first?.timestamp ?? 0) * 1_000)
-                let end = Int64(segments.last.map { ($0.timestamp + $0.duration) * 1_000 } ?? 0)
-                gate.succeed(.init(text: result.bestTranscription.formattedString,
-                                   startedAtMs: start, endedAtMs: max(start, end)))
-            }
+        return try await withTranscriptionDeadline {
+            let gate = RecognitionContinuationGate()
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    gate.install(continuation)
+                    let task = recognizer.recognitionTask(with: request) { result, error in
+                        if let result, result.isFinal {
+                            let segments = result.bestTranscription.segments
+                            let start = Int64((segments.first?.timestamp ?? 0) * 1000)
+                            let end = Int64(segments.last.map { ($0.timestamp + $0.duration) * 1000 } ?? 0)
+                            gate.succeed(.init(text: result.bestTranscription.formattedString,
+                                              startedAtMs: start, endedAtMs: max(start, end)))
+                        } else if let error { gate.fail(error) }
+                    }
+                    gate.retain(task, recognizer: recognizer)
+                }
+            } onCancel: { gate.fail(CancellationError()) }
         }
     }
 }
@@ -81,14 +91,29 @@ public final class AppleSpeechFileTranscriber: @unchecked Sendable {
 private final class RecognitionContinuationGate: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<OfflineTranscript, Error>?
-    init(_ continuation: CheckedContinuation<OfflineTranscript, Error>) { self.continuation = continuation }
+    private var result: Result<OfflineTranscript, Error>?
+    private var task: SFSpeechRecognitionTask?
+    private var recognizer: SFSpeechRecognizer?
+    func install(_ value: CheckedContinuation<OfflineTranscript, Error>) {
+        lock.lock()
+        if let result { lock.unlock(); value.resume(with: result) }
+        else { continuation = value; lock.unlock() }
+    }
+    func retain(_ value: SFSpeechRecognitionTask, recognizer: SFSpeechRecognizer) {
+        lock.lock()
+        if result != nil { lock.unlock(); value.cancel() }
+        else { task = value; self.recognizer = recognizer; lock.unlock() }
+    }
     func succeed(_ value: OfflineTranscript) { resume(.success(value)) }
     func fail(_ error: Error) { resume(.failure(error)) }
-    private func resume(_ result: Result<OfflineTranscript, Error>) {
+    private func resume(_ value: Result<OfflineTranscript, Error>) {
         lock.lock()
-        let value = continuation
-        continuation = nil
+        guard result == nil else { lock.unlock(); return }
+        result = value
+        let current = continuation; continuation = nil
+        let running = task; task = nil; recognizer = nil
         lock.unlock()
-        value?.resume(with: result)
+        running?.cancel()
+        current?.resume(with: value)
     }
 }

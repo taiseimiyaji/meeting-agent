@@ -1,3 +1,4 @@
+@preconcurrency import AVFoundation
 import Foundation
 import MeetingAnalysis
 import MeetingCapture
@@ -25,8 +26,15 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
     private let worker: PersistentAnalysisWorker
     private let store: MeetingStore
     private let evidenceRoot: URL
+    private let settings: AgentSettingsStore
+    private let fileTranscriber: (any FileTranscriber)?
+    private let whisper: WhisperFileTranscriber
+    private var scheduler: Task<Void, Never>?
 
-    public init(store: MeetingStore, evidenceRoot: URL, pollInterval: Duration = .milliseconds(250)) throws {
+    public init(store: MeetingStore, evidenceRoot: URL, pollInterval: Duration = .milliseconds(250), fileTranscriber: (any FileTranscriber)? = nil) throws {
+        whisper = WhisperFileTranscriber(directory: evidenceRoot.deletingLastPathComponent().appendingPathComponent("Models"))
+        self.fileTranscriber = fileTranscriber
+        self.settings = AgentSettingsStore(url: evidenceRoot.deletingLastPathComponent().appendingPathComponent("settings.json"))
         self.store = store
         self.evidenceRoot = evidenceRoot.standardizedFileURL
         try FileManager.default.createDirectory(at: self.evidenceRoot, withIntermediateDirectories: true)
@@ -34,10 +42,21 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
     }
 
     public func start() async throws {
+        guard scheduler == nil else { return }
         await configureHandlers()
         try enqueueMissingTranscriptions()
         try enqueueMissingSummaries()
         try await worker.start()
+        scheduler = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    _ = try self?.enqueueMissingTranscriptions()
+                    _ = try self?.enqueueMissingSummaries()
+                    try self?.applyRetention()
+                    try await Task.sleep(for: .seconds(2))
+                } catch { do { try await Task.sleep(for: .seconds(2)) } catch { break } }
+            }
+        }
     }
 
     /// Repairs meetings created by older builds that completed without a
@@ -47,8 +66,8 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
         for meeting in try store.meetings(limit: 10_000) {
             guard [.completed, .partiallyCompleted, .interrupted].contains(meeting.status),
                   try store.activeSummary(meetingId: meeting.id) == nil else { continue }
-            if try store.transcripts(meetingId: meeting.id).isEmpty,
-               Self.hasAudio(meetingID: meeting.id, evidenceRoot: evidenceRoot) { continue }
+            if (try? Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot)) ?? true { continue }
+            if try store.latestAnalysisJob(meetingId: meeting.id, kind: "summarize")?.status == .failed { continue }
             if try store.enqueueIfNeeded(.init(meetingId: meeting.id, kind: "summarize", priority: 2)) { count += 1 }
         }
         return count
@@ -57,9 +76,18 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
     @discardableResult public func enqueueMissingTranscriptions() throws -> Int {
         var count = 0
         for meeting in try store.meetings(limit: 10_000) {
-            guard [.completed, .partiallyCompleted, .interrupted].contains(meeting.status),
-                  try store.transcripts(meetingId: meeting.id).isEmpty,
-                  Self.hasAudio(meetingID: meeting.id, evidenceRoot: evidenceRoot) else { continue }
+            guard [.capturing, .completed, .partiallyCompleted, .interrupted].contains(meeting.status),
+                  (try? Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot)) ?? true else { continue }
+            if let job = try store.latestAnalysisJob(meetingId: meeting.id, kind: "transcribe"), job.status == .failed {
+                let directory = evidenceRoot.appendingPathComponent(meeting.id).appendingPathComponent("Audio")
+                let fresh = try ([directory] + ["legacy-systemAudio", "legacy-microphone"].map { directory.appendingPathComponent($0) }).contains { folder in
+                    try AudioArchiveWriter.chunks(in: folder).contains { chunk in
+                        !FileManager.default.fileExists(atPath: folder.appendingPathComponent("\(chunk.id).done").path) &&
+                        !FileManager.default.fileExists(atPath: folder.appendingPathComponent("\(chunk.id).attempt").path)
+                    }
+                }
+                if !fresh { continue }
+            }
             if try store.enqueueIfNeeded(.init(meetingId: meeting.id, kind: "transcribe", priority: 3)) { count += 1 }
         }
         return count
@@ -68,19 +96,47 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
     private func configureHandlers() async {
         let store = store
         let evidenceRoot = evidenceRoot
+        let settings = settings
+        let injected = fileTranscriber
+        let whisper = whisper
         await worker.register(kind: "transcribe") { job in
-            try await Self.transcribe(meetingID: job.meetingId, store: store, evidenceRoot: evidenceRoot)
-            _ = try store.enqueueIfNeeded(.init(meetingId: job.meetingId, kind: "summarize", priority: 2))
+            let provider: any FileTranscriber
+            if let injected { provider = injected }
+            else {
+                switch try settings.load().sttProvider {
+                case "speech_analyzer":
+                    if #available(macOS 26.0, *) { provider = AnalyzerFileTranscriber() }
+                    else { throw FileTranscriptionError.unsupportedProvider("speech_analyzer requires macOS 26") }
+                case "apple_speech": provider = AppleSpeechFileTranscriber()
+                case "whisperkit": provider = whisper
+                default: throw FileTranscriptionError.unsupportedProvider("unknown")
+                }
+            }
+            try await Self.transcribe(meetingID: job.meetingId, store: store, evidenceRoot: evidenceRoot, provider: provider)
+            if let meeting = try store.meeting(id: job.meetingId),
+               ![.capturing, .finalizing].contains(meeting.status),
+               try !Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot) {
+                _ = try store.enqueueIfNeeded(.init(meetingId: job.meetingId, kind: "summarize", priority: 2))
+            }
         }
         await worker.register(kind: "summarize") { job in
             guard let timeline = try store.timeline(meetingId: job.meetingId) else {
                 throw MeetingAnalysisRuntimeError.meetingNotFound(job.meetingId)
             }
-            let summary = HierarchicalHeuristicSummarizer().summarize(timeline)
+            guard let meeting = try store.meeting(id: job.meetingId),
+                  ![.capturing, .finalizing].contains(meeting.status),
+                  try !Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot) else {
+                throw MeetingAnalysisRuntimeError.transcriptionEmpty(job.meetingId)
+            }
+            var summary = HierarchicalHeuristicSummarizer().summarize(timeline)
+            let selected = try settings.load().summaryProvider
+            if selected == "apple_foundation_models" {
+                summary.summary = try await FoundationSummary.generate(timeline: timeline)
+            }
             try store.saveSummary(.init(
                 meetingId: job.meetingId,
-                provider: "local-heuristic",
-                model: "hierarchical-v1",
+                provider: selected,
+                model: selected == "local_heuristic" ? "hierarchical-v1" : "system-language-model",
                 promptVersion: "heuristic-sections-v1",
                 value: summary
             ))
@@ -90,33 +146,166 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
         }
     }
 
-    public func stop() async { await worker.stop() }
+    public func stop() async { scheduler?.cancel(); scheduler = nil; await worker.stop() }
 
-    private static func hasAudio(meetingID: String, evidenceRoot: URL) -> Bool {
-        let directory = evidenceRoot.appendingPathComponent(meetingID).appendingPathComponent("Audio")
-        return ["system.caf", "microphone.caf"].contains { FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path) }
+    private static func hasPendingAudio(meeting: Meeting, evidenceRoot: URL) throws -> Bool {
+        let directory = evidenceRoot.appendingPathComponent(meeting.id).appendingPathComponent("Audio")
+        let closed = ![.capturing, .finalizing].contains(meeting.status)
+        for folder in [directory] + ["legacy-systemAudio", "legacy-microphone"].map({ directory.appendingPathComponent($0) }) {
+            let chunks = try AudioArchiveWriter.chunks(in: folder, recoverOpen: closed)
+            if try !AudioArchiveWriter.corruptUnits(in: folder).isEmpty { return true }
+            if chunks.contains(where: { !FileManager.default.fileExists(atPath: folder.appendingPathComponent("\($0.id).done").path) }) { return true }
+        }
+        return closed && ["system.caf", "microphone.caf"].contains {
+            FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path) &&
+            !FileManager.default.fileExists(atPath: directory.appendingPathComponent("\($0).imported").path)
+        }
     }
 
-    private static func transcribe(meetingID: String, store: MeetingStore, evidenceRoot: URL) async throws {
-        let directory = evidenceRoot.appendingPathComponent(meetingID).appendingPathComponent("Audio")
-        let inputs: [(String, Speaker, AudioSource)] = [
-            ("system.caf", .remote, .system), ("microphone.caf", .self, .microphone)
-        ]
-        let available = inputs.filter { FileManager.default.fileExists(atPath: directory.appendingPathComponent($0.0).path) }
-        guard !available.isEmpty else { throw MeetingAnalysisRuntimeError.audioArchiveMissing(meetingID) }
-
-        let transcriber = AppleSpeechFileTranscriber()
-        var events: [MeetingCore.TranscriptEvent] = []
-        for (name, speaker, source) in available {
-            let result = try await transcriber.transcribe(file: directory.appendingPathComponent(name))
-            guard !result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            events.append(.init(meetingId: meetingID,
-                                timeRange: .init(startedAtMs: result.startedAtMs, endedAtMs: result.endedAtMs),
-                                speaker: speaker, text: result.text, source: source, isFinal: true))
+    private static func importLegacy(in directory: URL, only: String) throws {
+        for (name, kind) in [("system.caf", CaptureOutputKind.systemAudio), ("microphone.caf", .microphone)] where name == only {
+            let file = directory.appendingPathComponent(name)
+            let marker = directory.appendingPathComponent("\(name).imported")
+            guard FileManager.default.fileExists(atPath: file.path), !FileManager.default.fileExists(atPath: marker.path) else { continue }
+            // Stage each track before publishing its chunks. Rename makes restart
+            // safe; a track already imported is never imported twice.
+            let staging = directory.appendingPathComponent("import-\(kind.rawValue)")
+            if FileManager.default.fileExists(atPath: staging.path) { try FileManager.default.removeItem(at: staging) }
+            let writer = try AudioArchiveWriter(directory: staging)
+            let audio = try AVAudioFile(forReading: file)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: 4096) else { throw CocoaError(.fileReadCorruptFile) }
+            var frames: Int64 = 0
+            while audio.framePosition < audio.length {
+                try audio.read(into: buffer)
+                try writer.write(buffer, kind: kind, timestampMs: Int64(Double(frames) / audio.processingFormat.sampleRate * 1000))
+                frames += Int64(buffer.frameLength)
+            }
+            writer.finish()
+            if let error = writer.lastError { throw NSError(domain: "AudioArchive", code: 1, userInfo: [NSLocalizedDescriptionKey: error]) }
+            // Publish the directory atomically; readers include these directories.
+            let published = directory.appendingPathComponent("legacy-\(kind.rawValue)")
+            if !FileManager.default.fileExists(atPath: published.path) { try FileManager.default.moveItem(at: staging, to: published) }
+            else { try FileManager.default.removeItem(at: staging) }
+            try Data().write(to: marker, options: .atomic)
         }
-        guard !events.isEmpty else { throw MeetingAnalysisRuntimeError.transcriptionEmpty(meetingID) }
-        try store.replaceTranscripts(meetingId: meetingID, with: events)
-        for event in events { _ = try? store.associateVisibleScreens(transcriptId: event.id) }
+    }
+
+    private static func transcribe(meetingID: String, store: MeetingStore, evidenceRoot: URL, provider: any FileTranscriber) async throws {
+        guard let meeting = try store.meeting(id: meetingID) else { throw MeetingAnalysisRuntimeError.meetingNotFound(meetingID) }
+        let directory = evidenceRoot.appendingPathComponent(meetingID).appendingPathComponent("Audio")
+        let closed = ![.capturing, .finalizing].contains(meeting.status)
+        var failures: [String] = []
+        if closed {
+            for name in ["system.caf", "microphone.caf"] {
+                do { try importLegacy(in: directory, only: name) } catch { failures.append(error.localizedDescription) }
+            }
+        }
+        let directories = [directory] + ["legacy-systemAudio", "legacy-microphone"].map { directory.appendingPathComponent($0) }
+        var processed = 0
+        var totalChunks = 0
+        for folder in directories {
+            let chunks: [AudioChunk]
+            do { chunks = try AudioArchiveWriter.chunks(in: folder, recoverOpen: closed) }
+            catch { failures.append(error.localizedDescription); continue }
+            failures.append(contentsOf: try AudioArchiveWriter.corruptUnits(in: folder))
+            totalChunks += chunks.count
+            for chunk in chunks {
+                try Task.checkCancellation()
+                let receipt = folder.appendingPathComponent("\(chunk.id).done")
+                guard !FileManager.default.fileExists(atPath: receipt.path) else { continue }
+                let attemptFile = folder.appendingPathComponent("\(chunk.id).attempt")
+                let attempts = (try? String(contentsOf: attemptFile, encoding: .utf8)).flatMap(Int.init) ?? 0
+                if attempts >= 3 { failures.append("\(chunk.id): 再試行上限。手動復旧してください。"); continue }
+                guard processed < 4 else { continue }
+                processed += 1
+                do {
+                    try Data(String(attempts + 1).utf8).write(to: attemptFile, options: .atomic)
+                    let file = folder.appendingPathComponent(chunk.fileName)
+                    let silent = try isSilent(file)
+                    let result = silent ? OfflineTranscript(text: "", startedAtMs: 0, endedAtMs: 0) :
+                        try await withTranscriptionDeadline { try await provider.transcribe(file: file) }
+                    // An empty result for non-silent input remains retryable.
+                    if !silent && result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        throw MeetingAnalysisRuntimeError.transcriptionEmpty(meetingID)
+                    }
+                    var text = result.text
+                    let source: AudioSource = chunk.kind == CaptureOutputKind.microphone.rawValue ? .microphone : .system
+                    var start = min(chunk.endedAtMs, chunk.startedAtMs + max(0, result.startedAtMs))
+                    if (chunk.overlapMs ?? 0) > 0,
+                       let previous = try store.transcripts(meetingId: meetingID).last(where: {
+                           $0.id != chunk.id && $0.source == source && $0.timeRange.startedAtMs < start &&
+                           ($0.timeRange.endedAtMs ?? 0) > start
+                       }) {
+                        let limit = min(Int(Double(chunk.overlapMs ?? 0) / 1000 * 12), min(previous.text.count, text.count))
+                        if limit >= 4 {
+                            for length in stride(from: limit, through: 4, by: -1) where previous.text.suffix(length) == text.prefix(length) {
+                                text = String(text.dropFirst(length))
+                                start = max(start, previous.timeRange.endedAtMs ?? start)
+                                break
+                            }
+                        }
+                    }
+                    let event = MeetingCore.TranscriptEvent(id: chunk.id, meetingId: meetingID,
+                        timeRange: .init(startedAtMs: start, endedAtMs: max(start, min(chunk.endedAtMs, chunk.startedAtMs + result.endedAtMs))),
+                        speaker: source == .microphone ? .self : .remote, text: text, source: source, isFinal: true)
+                    try store.saveRecoveredTranscript(event)
+                    if !silent { _ = try store.associateVisibleScreens(transcriptId: event.id) }
+                    try JSONEncoder().encode(["provider": provider.provider, "status": silent ? "silence" : "completed"])
+                        .write(to: receipt, options: .atomic)
+                    try? FileManager.default.removeItem(at: folder.appendingPathComponent("\(chunk.id).error"))
+                } catch {
+                    if error is CancellationError { try? Data(String(attempts).utf8).write(to: attemptFile, options: .atomic); throw error }
+                    failures.append("\(chunk.kind) @\(chunk.startedAtMs): \(error.localizedDescription)")
+                    try? Data(error.localizedDescription.utf8).write(to: folder.appendingPathComponent("\(chunk.id).error"), options: .atomic)
+                }
+            }
+        }
+        if closed {
+            for (folderName, source) in [("legacy-systemAudio", AudioSource.system), ("legacy-microphone", .microphone)] {
+                let folder = directory.appendingPathComponent(folderName)
+                let marker = folder.appendingPathComponent("retired-legacy")
+                guard !FileManager.default.fileExists(atPath: marker.path) else { continue }
+                let chunks = try AudioArchiveWriter.chunks(in: folder)
+                if !chunks.isEmpty && chunks.allSatisfy({ FileManager.default.fileExists(atPath: folder.appendingPathComponent("\($0.id).done").path) }) {
+                    try store.retireLegacyTranscripts(meetingId: meetingID, source: source, keeping: chunks.map(\.id))
+                    try Data().write(to: marker, options: .atomic)
+                }
+            }
+        }
+        if closed && totalChunks == 0 && failures.isEmpty { throw MeetingAnalysisRuntimeError.audioArchiveMissing(meetingID) }
+        if !failures.isEmpty { throw NSError(domain: "Transcription", code: 1, userInfo: [NSLocalizedDescriptionKey: failures.joined(separator: "\n")]) }
+    }
+
+    private static func isSilent(_ url: URL) throws -> Bool {
+        let audio = try AVAudioFile(forReading: url)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: 4096) else { return false }
+        while audio.framePosition < audio.length {
+            try audio.read(into: buffer)
+            guard let channels = buffer.floatChannelData else { return false }
+            for c in 0..<Int(buffer.format.channelCount) {
+                for f in 0..<Int(buffer.frameLength) where abs(channels[c][f]) > 0.000_01 { return false }
+            }
+        }
+        return true
+    }
+
+    private func applyRetention() throws {
+        let days = try settings.load().retentionDays
+        guard days > 0 else { return }
+        let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
+        for meeting in try store.meetings(limit: 10_000) {
+            guard let ended = meeting.endedAt, ended < cutoff,
+                  [.completed, .partiallyCompleted, .interrupted, .failed].contains(meeting.status),
+                  UUID(uuidString: meeting.id) != nil else { continue }
+            let busy = try ["transcribe", "summarize", "export"].contains { kind in
+                guard let job = try store.latestAnalysisJob(meetingId: meeting.id, kind: kind) else { return false }
+                return [.pending, .processing].contains(job.status)
+            }
+            if busy { continue }
+            let directory = evidenceRoot.appendingPathComponent(meeting.id)
+            if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
+            try store.deleteMeeting(id: meeting.id)
+        }
     }
 
     /// Deterministic hook used by tests and one-shot clients.
