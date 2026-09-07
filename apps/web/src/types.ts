@@ -51,6 +51,7 @@ export interface ActionItem { id?: string; text: string; owner?: string | null; 
 export interface SummaryItem { text: string; evidenceIds: string[]; assignee?: string | null; dueAt?: string | null; }
 export interface SpeakerAttribution { transcriptId: string; name: string; evidenceIds: string[]; reason: string; }
 export interface MeetingSummary {
+  discussions?: { title: string; summary: string; evidenceIds: string[] }[];
   speakerAttributions?: SpeakerAttribution[];
   overviewEvidenceIds?: string[];
   summary: string;
@@ -60,6 +61,7 @@ export interface MeetingSummary {
   topics: string[];
 }
 export interface SummaryProgress {
+  provider?: string;
   state: "not_started" | "queued" | "running" | "retrying" | "completed" | "failed";
   retryCount: number;
   error?: string | null;

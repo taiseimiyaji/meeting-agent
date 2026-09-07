@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import MeetingCore
 
 public struct CodexReceipt: Codable, Sendable {
@@ -14,16 +15,37 @@ public struct CodexRunner: Sendable {
     public let executable: URL
     public let environment: [String: String]
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment) throws {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let candidates = [home + "/.local/bin/codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex"]
+        // LaunchServices can inherit a sandbox container's HOME. Resolve the
+        // account's actual home without opening or copying any login files.
+        guard let entry = getpwuid(getuid()), let directory = entry.pointee.pw_dir else {
+            throw CodexFailure("ユーザーのホームディレクトリを取得できませんでした。アプリを再起動してください。")
+        }
+        let home = String(cString: directory)
+        let candidates = Self.executableCandidates(home: home, path: environment["PATH"])
         guard let path = executable?.path ?? candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-            throw CodexFailure("Codex CLIが見つかりません。Codexをインストールし、ターミナルで codex login を実行してください。")
+            throw CodexFailure("Codex CLIを検出できませんでした。ターミナルの command -v codex で場所を確認してください。対応先: ~/.local/bin、Homebrew、npm、nvm、mise、asdf、Volta、PATH。インストール済みの場合はアプリを再起動してください。")
         }
         self.executable = URL(fileURLWithPath: path)
         // Intentionally exclude API keys, base URL/provider overrides and injected libraries.
-        var clean = ["HOME": home, "PATH": home + "/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "LANG": "en_US.UTF-8"]
+        var clean = ["HOME": home, "PATH": URL(fileURLWithPath: path).deletingLastPathComponent().path + ":" + home + "/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", "LANG": "en_US.UTF-8"]
         if let value = environment["CODEX_HOME"], value.hasPrefix("/") { clean["CODEX_HOME"] = value }
         self.environment = clean
+    }
+
+    public static func executableCandidates(home: String, path: String?) -> [String] {
+        var paths = [home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin",
+                     home + "/.npm-global/bin", home + "/.npm/bin", home + "/.volta/bin",
+                     home + "/.asdf/shims", home + "/.local/share/mise/shims",
+                     home + "/.codex/packages/standalone/current/bin"]
+        // GUI launches do not normally inherit the terminal's PATH. Include
+        // common version-manager installs without sourcing arbitrary shell RCs.
+        for root in [home + "/.nvm/versions/node", home + "/.local/share/mise/installs/node"] {
+            let versions = (try? FileManager.default.contentsOfDirectory(atPath: root)) ?? []
+            paths += versions.sorted { $0.compare($1, options: .numeric) == .orderedDescending }.map { root + "/" + $0 + "/bin" }
+        }
+        paths += (path ?? "").split(separator: ":").map(String.init).filter { $0.hasPrefix("/") }
+        var seen = Set<String>()
+        return paths.map { $0 + "/codex" }.filter { seen.insert($0).inserted }
     }
 
     public func checkLogin(directory: URL) async throws {

@@ -165,12 +165,22 @@ public struct SpeakerAttribution: Codable, Equatable, Sendable {
     }
 }
 
+public struct DiscussionItem: Codable, Equatable, Sendable {
+    public var title: String
+    public var summary: String
+    public var evidenceIds: [String]
+    public init(title: String, summary: String, evidenceIds: [String]) {
+        self.title = title; self.summary = summary; self.evidenceIds = evidenceIds
+    }
+}
+
 public struct MeetingSummary: Codable, Equatable, Sendable {
     public var summary: String
     public var decisions: [SummaryItem]
     public var actionItems: [SummaryItem]
     public var openQuestions: [SummaryItem]
     public var topics: [String]
+    public var discussions: [DiscussionItem]?
     public var overviewEvidenceIds: [String]?
     public var speakerAttributions: [SpeakerAttribution]?
 

@@ -318,6 +318,18 @@ func verifyEchoes() async throws {
     try check(TranscriptEchoDetector.annotate([numericMic, numericRemote])[0].possibleEchoOf == nil, "numeric punctuation cannot create a false duplicate")
     try check(try JSONDecoder().decode(MeetingCore.TranscriptEvent.self, from: JSONEncoder().encode(marked[0])).possibleEchoOf == remote.id, "echo annotation survives API JSON encoding")
 
+    var variant = mic; variant.text = message.replacingOccurrences(of: "この設計", with: "その設計")
+    variant.timeRange = .init(startedAtMs: 2500, endedAtMs: 11500)
+    try check(TranscriptEchoDetector.annotate([variant, remote])[0].possibleEchoOf == remote.id, "recognition variation and shifted intervals are deduplicated")
+    var negative = remote; negative.text = "この設計を採用することについては必要ないと考えています。"
+    var positive = mic; positive.text = "この設計を採用することについては必要だと考えています。"
+    try check(TranscriptEchoDetector.annotate([positive, negative])[0].possibleEchoOf == nil, "negated opinions remain separate")
+    var first = remote; first.text = "来週のリリースに向けて"; first.timeRange.endedAtMs = 5000
+    var second = remote; second.id = "remote-second"; second.text = "この設計を採用することに決定しました。"; second.timeRange.startedAtMs = 5000
+    try check(TranscriptEchoDetector.annotate([mic, second, first])[0].possibleEchoOf == first.id, "joined microphone chunk matches split system recognition")
+    var spaced = mic; spaced.text = "来週の リリースに向けて この設計を採用することに決定しました。"
+    try check(TranscriptEchoDetector.annotate([spaced, remote])[0].possibleEchoOf == remote.id, "ASR whitespace does not leave duplicate speech")
+
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -344,12 +356,17 @@ func verifyCodexContract() throws {
     try input.validate()
     var value = MeetingCore.MeetingSummary(summary: "来週公開します。", decisions: [.init(text: "来週公開", evidenceIds: [event.id])])
     value.overviewEvidenceIds = [event.id]
+    value.discussions = [.init(title: "公開日", summary: "来週の公開を決定した。", evidenceIds: [event.id])]
     value.speakerAttributions = [.init(transcriptId: event.id, name: "田中", evidenceIds: ["s1", "s2"], reason: "両方の画面で田中の発話中表示")]
     try input.validate(value)
     try check(true, "grounded summary and covered visual speaker pass")
     func rejects(_ summary: MeetingCore.MeetingSummary, input: CodexMeetingInput = input) -> Bool {
         do { try input.validate(summary); return false } catch { return true }
     }
+    var missingDiscussion = value; missingDiscussion.discussions = nil
+    try check(rejects(missingDiscussion), "Codex output must include grounded discussion minutes")
+    missingDiscussion = value; missingDiscussion.discussions?[0].evidenceIds = ["forged"]
+    try check(rejects(missingDiscussion), "discussion evidence cannot be fabricated")
     var forged = value; forged.decisions[0].evidenceIds = ["not-in-meeting"]
     try check(rejects(forged), "fabricated evidence cannot be saved")
     forged = value; forged.overviewEvidenceIds = []

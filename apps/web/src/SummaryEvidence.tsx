@@ -19,7 +19,7 @@ export function SummaryEvidence({ item, transcripts, screens }: { item: SummaryI
       </button>
       <figcaption><time>{time(screen.startedAtMs)}</time> · {[...relations].map((relation) => relationLabels[relation]).join(" / ")}{screen.description && <p>{screen.description}</p>}</figcaption>
     </figure>)}</div> : <p className="evidence-note">この項目に紐づく画面はありません。</p>}
-    {evidence.transcripts.length > 0 && <details className="summary-speech"><summary>根拠の発話を見る（{evidence.transcripts.length}件）</summary>{evidence.transcripts.map((transcript) => <blockquote key={transcript.id}><small>{time(transcript.startedAtMs)} · {transcript.attributedSpeaker ? `${transcript.attributedSpeaker.name}（AI照合）` : transcript.speaker === "self" ? "あなた" : transcript.speaker === "remote" ? "話者不明（システム音声）" : "話者不明"}</small><p>{transcript.text}</p></blockquote>)}</details>}
+    {evidence.transcripts.length > 0 && <details className="summary-speech"><summary>根拠の発話を見る（{evidence.transcripts.length}件）</summary>{evidence.transcripts.map((transcript) => <blockquote key={transcript.id}><small>{time(transcript.startedAtMs)} · {transcript.attributedSpeaker ? `${transcript.attributedSpeaker.name}（AI照合）` : transcript.speaker === "self" ? "マイク音声（話者未確認）" : transcript.speaker === "remote" ? "話者不明（システム音声）" : "話者不明"}</small><p>{transcript.text}</p></blockquote>)}</details>}
     {evidence.missingCount > 0 && <p className="evidence-note">一部の根拠データが見つかりません（{evidence.missingCount}件）。</p>}
     {expanded && <ScreenshotDialog screen={expanded} close={() => setExpanded(undefined)}/>}
   </div>;

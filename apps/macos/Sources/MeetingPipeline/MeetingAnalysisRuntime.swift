@@ -158,7 +158,7 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
                 meetingId: job.meetingId,
                 provider: selected,
                 model: model,
-                promptVersion: selected == "codex_chatgpt" ? "codex-evidence-v1" : "heuristic-sections-v1",
+                promptVersion: selected == "codex_chatgpt" ? "codex-minutes-v2" : "heuristic-sections-v1",
                 value: summary
             ))
         }
@@ -368,8 +368,9 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
         func section(_ title: String, _ items: [MeetingCore.SummaryItem]) -> String {
             "## \(title)\n\n" + (items.isEmpty ? "- None" : items.map { "- \($0.text)" }.joined(separator: "\n"))
         }
-        return ["# Summary\n\n\(summary.summary)", section("Decisions", summary.decisions),
-                section("Action Items", summary.actionItems), section("Open Questions", summary.openQuestions)]
+        let discussions = (summary.discussions ?? []).map { "## \($0.title)\n\n\($0.summary)\n\n根拠: \($0.evidenceIds.joined(separator: ", "))" }
+        return (["# 議事録\n\n\(summary.summary)"] + discussions + [section("Decisions", summary.decisions),
+                section("Action Items", summary.actionItems), section("Open Questions", summary.openQuestions)])
             .joined(separator: "\n\n") + "\n"
     }
 }

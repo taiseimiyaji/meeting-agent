@@ -4,24 +4,100 @@
   "title": "MeetingSummary",
   "type": "object",
   "additionalProperties": false,
-  "required": ["summary", "decisions", "actionItems", "openQuestions", "topics"],
+  "required": [
+    "summary",
+    "decisions",
+    "actionItems",
+    "openQuestions",
+    "topics"
+  ],
   "properties": {
-    "summary": { "type": "string" },
-    "decisions": { "type": "array", "items": { "$ref": "#/$defs/item" } },
-    "actionItems": { "type": "array", "items": { "$ref": "#/$defs/item" } },
-    "openQuestions": { "type": "array", "items": { "$ref": "#/$defs/item" } },
-    "topics": { "type": "array", "items": { "type": "string" } },
-    "overviewEvidenceIds": { "type": "array", "items": { "type": "string" } },
+    "summary": {
+      "type": "string"
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    },
+    "actionItems": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    },
+    "openQuestions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    },
+    "topics": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "overviewEvidenceIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "speakerAttributions": {
       "type": "array",
       "items": {
-        "type": "object", "additionalProperties": false,
-        "required": ["transcriptId", "name", "evidenceIds", "reason"],
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "transcriptId",
+          "name",
+          "evidenceIds",
+          "reason"
+        ],
         "properties": {
-          "transcriptId": { "type": "string" },
-          "name": { "type": "string" },
-          "evidenceIds": { "type": "array", "items": { "type": "string" } },
-          "reason": { "type": "string" }
+          "transcriptId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "evidenceIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "discussions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "summary",
+          "evidenceIds"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "evidenceIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       }
     }
@@ -30,16 +106,36 @@
     "item": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["text", "evidenceIds"],
+      "required": [
+        "text",
+        "evidenceIds"
+      ],
       "properties": {
-        "text": { "type": "string", "minLength": 1 },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
         "evidenceIds": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 },
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "uniqueItems": true
         },
-        "assignee": { "type": ["string", "null"] },
-        "dueAt": { "type": ["string", "null"], "format": "date-time" }
+        "assignee": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dueAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
       }
     }
   }

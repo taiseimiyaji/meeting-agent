@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "./App";
-const state = vi.hoisted(() => ({ summaryText: "古い要約", speakers: [] as unknown[], transcript: [] as unknown[], callback: undefined as ((event: unknown) => void) | undefined, onConnect: undefined as ((connected: boolean) => void) | undefined }));
+const state = vi.hoisted(() => ({ summaryText: "古い要約", discussions: [] as unknown[], speakers: [] as unknown[], transcript: [] as unknown[], callback: undefined as ((event: unknown) => void) | undefined, onConnect: undefined as ((connected: boolean) => void) | undefined }));
 vi.mock("./api", () => ({
   isAuthenticationError: () => false,
   subscribe: (callback: (event: unknown) => void, connected: (value: boolean) => void) => { state.callback = callback; state.onConnect = connected; connected(true); return () => {}; },
@@ -15,15 +15,15 @@ vi.mock("./api", () => ({
     meeting: async () => ({ id: "m1", title: "検証会議", status: "capturing", startedAt: "2026-09-07T00:00:00Z" }),
     transcript: async () => state.transcript,
     screens: async () => [],
-    summary: async () => ({ summary: state.summaryText, speakerAttributions: state.speakers, decisions: [], actionItems: [], openQuestions: [], topics: [] }),
-    summaryProgress: async () => ({ state: "completed", retryCount: 0 }),
+    summary: async () => ({ summary: state.summaryText, discussions: state.discussions, speakerAttributions: state.speakers, decisions: [], actionItems: [], openQuestions: [], topics: [] }),
+    summaryProgress: async () => ({ state: "completed", retryCount: 0, provider: "codex_chatgpt" }),
     summarize: async () => { state.summaryText = "重複をまとめた新しい要約"; },
     transcriptionProgress: async () => ({ state: "queued", hasSystemAudio: true, hasMicrophoneAudio: true, archivedBytes: 42, totalChunks: 1, completedChunks: 0, isCapturing: true }),
     startCapture: async () => { throw new Error("マイク権限がありません"); },
     stopCapture: async () => { throw new Error("停止処理に失敗しました"); },
   },
 }));
-beforeEach(() => { state.speakers = []; state.transcript = []; state.summaryText = "古い要約"; });
+beforeEach(() => { state.discussions = []; state.speakers = []; state.transcript = []; state.summaryText = "古い要約"; });
 afterEach(() => cleanup());
 function mount() { render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><App/></QueryClientProvider>); }
 function addTranscript() { state.transcript = [{ id: "t1", revision: 1, startedAtMs: 0, endedAtMs: 1000, speaker: "self", text: "後から届いた文字起こし", isFinal: true, source: "microphone", screenRefs: [] }]; }
@@ -78,4 +78,13 @@ it("shows an evidence-backed name and leaves other system speech unknown", async
   expect(await screen.findByText("田中")).toBeTruthy();
   expect(screen.getByText("話者不明（システム音声）")).toBeTruthy();
   expect(screen.getAllByRole("button", { name: "発話者の根拠画面" })).toHaveLength(2);
+});
+
+it("shows the stored generator and topic discussion in meeting minutes", async () => {
+  state.discussions = [{ title: "公開日の変更", summary: "負荷試験が未完了のため、公開を延期した。", evidenceIds: [] }];
+  mount(); fireEvent.click(await screen.findByText("ライブ表示"));
+  fireEvent.click(screen.getByRole("button", { name: "Summary" }));
+  expect(await screen.findByText("生成元: Codex（ChatGPT）")).toBeTruthy();
+  expect(screen.getByText("公開日の変更")).toBeTruthy();
+  expect(screen.getByText("負荷試験が未完了のため、公開を延期した。")).toBeTruthy();
 });
