@@ -184,6 +184,25 @@ actor TestFileTranscriber: FileTranscriber {
             headers: ["Host": "127.0.0.1:8765", "Authorization": credentials.sessionToken]))
         try check(settingsResponse.status == 200, "settings are available through the authenticated API")
 
+        let stereoFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2, interleaved: true)!
+        let stereo = AVAudioPCMBuffer(pcmFormat: stereoFormat, frameCapacity: 4800)!
+        stereo.frameLength = 4800
+        for i in 0..<9600 { stereo.floatChannelData![0][i] = i % 2 == 0 ? 0.2 : -0.3 }
+        let stereoFolder = root.appendingPathComponent("stereo")
+        let stereoWriter = try AudioArchiveWriter(directory: stereoFolder)
+        try stereoWriter.write(stereo, kind: .systemAudio, timestampMs: 8000)
+        stereoWriter.finish()
+        let stereoChunk = try AudioArchiveWriter.chunks(in: stereoFolder)[0]
+        let stereoFile = try AVAudioFile(forReading: stereoFolder.appendingPathComponent(stereoChunk.fileName))
+        let stereoRead = AVAudioPCMBuffer(pcmFormat: stereoFile.processingFormat, frameCapacity: 4800)!
+        try stereoFile.read(into: stereoRead)
+        try check(stereoFile.length == 4800 && stereoRead.floatChannelData![0][0] == 0.2 && stereoRead.floatChannelData![1][0] == -0.3, "interleaved system audio preserves both channels")
+
+        let corruptID = UUID().uuidString
+        try Data("broken".utf8).write(to: stereoFolder.appendingPathComponent("\(corruptID).json"))
+        try check(try AudioArchiveWriter.chunks(in: stereoFolder).count == 1, "corrupt sidecar does not hide another valid audio unit")
+        try check(try AudioArchiveWriter.corruptUnits(in: stereoFolder).count == 1, "corrupt sidecars are reported instead of treated as completed")
+
         // A 30-minute replay exercises the real writer without waiting 30 minutes.
         let longDirectory = root.appendingPathComponent("long-audio")
         let writer = try AudioArchiveWriter(directory: longDirectory)

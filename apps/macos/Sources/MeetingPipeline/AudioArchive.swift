@@ -150,7 +150,8 @@ public final class AudioArchiveWriter: @unchecked Sendable {
             .compactMap { url -> AudioChunk? in
                 do {
                 var chunk = try JSONDecoder().decode(AudioChunk.self, from: Data(contentsOf: url))
-                guard UUID(uuidString: chunk.id) != nil, chunk.fileName == "\(chunk.id).caf" else {
+                guard UUID(uuidString: chunk.id) != nil, chunk.fileName == "\(chunk.id).caf",
+                      ["systemAudio", "microphone"].contains(chunk.kind), chunk.startedAtMs >= 0, chunk.endedAtMs >= chunk.startedAtMs else {
                     throw CocoaError(.fileReadCorruptFile)
                 }
                 if !chunk.closed && recoverOpen {

@@ -76,7 +76,7 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
     @discardableResult public func enqueueMissingTranscriptions() throws -> Int {
         var count = 0
         for meeting in try store.meetings(limit: 10_000) {
-            guard [.capturing, .completed, .partiallyCompleted, .interrupted].contains(meeting.status),
+            guard [.capturing, .completed, .partiallyCompleted, .interrupted, .failed].contains(meeting.status),
                   (try? Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot)) ?? true else { continue }
             if let job = try store.latestAnalysisJob(meetingId: meeting.id, kind: "transcribe"), job.status == .failed {
                 let directory = evidenceRoot.appendingPathComponent(meeting.id).appendingPathComponent("Audio")

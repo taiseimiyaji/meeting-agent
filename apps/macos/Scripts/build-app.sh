@@ -24,6 +24,8 @@ cp "$package_dir/Resources/Info.plist" "$app_dir/Contents/Info.plist"
 cp "$bin_dir/MeetingAgent" "$app_dir/Contents/MacOS/MeetingAgent"
 for resource_bundle in "$bin_dir"/*.bundle; do
   [ -d "$resource_bundle" ] || continue
+  resource_name=$(basename "$resource_bundle")
+  rm -rf "$app_dir/Contents/Resources/$resource_name"
   cp -R "$resource_bundle" "$app_dir/Contents/Resources/"
 done
 rm -rf "$app_dir/Contents/Resources/Web"
