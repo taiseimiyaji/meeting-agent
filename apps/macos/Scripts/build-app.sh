@@ -7,8 +7,18 @@ configuration=${CONFIGURATION:-debug}
 repository_dir=$(dirname "$package_dir")
 repository_dir=$(dirname "$repository_dir")
 web_dir="$repository_dir/apps/web"
-output_dir="$package_dir/.build/app"
+output_dir=${APP_OUTPUT_DIR:-"$package_dir/.build/app"}
 app_dir="$output_dir/MeetingAgent.app"
+
+# Replacing a running signed executable invalidates its entitlement lookup.
+# Check before building as well as immediately before installing the bundle.
+ensure_not_running() {
+  if ps -ww -axo comm= | awk -v executable="$app_dir/Contents/MacOS/MeetingAgent" '$0 == executable { found = 1 } END { exit !found }'; then
+    echo "Meeting Agent is running from $app_dir. Quit it before rebuilding, or set APP_OUTPUT_DIR to stage a separate build." >&2
+    exit 1
+  fi
+}
+ensure_not_running
 
 cd "$package_dir"
 swift build --disable-sandbox -c "$configuration" --product MeetingAgent
@@ -19,6 +29,7 @@ if [ ! -d "$web_dir/node_modules" ]; then
 fi
 (cd "$web_dir" && npm run build)
 
+ensure_not_running
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp "$package_dir/Resources/Info.plist" "$app_dir/Contents/Info.plist"
 cp "$bin_dir/MeetingAgent" "$app_dir/Contents/MacOS/MeetingAgent"

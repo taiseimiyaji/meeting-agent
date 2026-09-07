@@ -53,7 +53,7 @@ it("collapses echo candidates by default and lets the user inspect the original 
 
 it("allows an existing summary to be regenerated", async () => {
   mount(); fireEvent.click(await screen.findByText("ライブ表示"));
-  fireEvent.click(screen.getByRole("button", { name: "Summary", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Summary" }));
   await screen.findByText("古い要約");
   fireEvent.click(screen.getByRole("button", { name: "要約を再生成" }));
   expect(await screen.findByText("重複をまとめた新しい要約")).toBeTruthy();
