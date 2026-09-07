@@ -120,7 +120,7 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
             }
         }
         await worker.register(kind: "summarize") { job in
-            guard let timeline = try store.timeline(meetingId: job.meetingId) else {
+            guard var timeline = try store.timeline(meetingId: job.meetingId) else {
                 throw MeetingAnalysisRuntimeError.meetingNotFound(job.meetingId)
             }
             guard let meeting = try store.meeting(id: job.meetingId),
@@ -128,6 +128,7 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
                   try !Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot) else {
                 throw MeetingAnalysisRuntimeError.transcriptionEmpty(job.meetingId)
             }
+            timeline.transcripts.removeAll { $0.possibleEchoOf != nil }
             var summary = HierarchicalHeuristicSummarizer().summarize(timeline)
             let selected = try settings.load().summaryProvider
             if selected == "apple_foundation_models" {
@@ -324,7 +325,7 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
         let transcript = timeline.transcripts
-            .filter(\.isFinal)
+            .filter { $0.isFinal && $0.possibleEchoOf == nil }
             .sorted { $0.timeRange.startedAtMs < $1.timeRange.startedAtMs }
             .map { event in
                 let seconds = event.timeRange.startedAtMs / 1_000

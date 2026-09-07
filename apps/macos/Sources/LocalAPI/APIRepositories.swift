@@ -60,15 +60,14 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
         let hasSummary = try store.activeSummary(meetingId: meetingId) != nil
         let job = try store.latestAnalysisJob(meetingId: meetingId, kind: "summarize")
         let state: SummaryProgressState
-        if hasSummary { state = .completed }
-        else if let job {
+        if let job {
             switch job.status {
             case .pending: state = job.retryCount > 0 ? .retrying : .queued
             case .processing: state = .running
             case .completed: state = .completed
             case .failed: state = .failed
             }
-        } else { state = .notStarted }
+        } else { state = hasSummary ? .completed : .notStarted }
         return .init(state: state, retryCount: job?.retryCount ?? 0, error: job?.error, availableAt: job?.availableAt)
     }
     public func transcriptionProgress(meetingId: String) throws -> TranscriptionProgressResponse {

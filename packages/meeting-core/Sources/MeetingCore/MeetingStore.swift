@@ -195,7 +195,7 @@ public final class MeetingStore: @unchecked Sendable {
 
     public func timeline(meetingId: String) throws -> Timeline? {
         guard let meeting = try meeting(id: meetingId) else { return nil }
-        return Timeline(meeting: meeting, transcripts: try transcripts(meetingId: meetingId), screens: try screens(meetingId: meetingId))
+        return Timeline(meeting: meeting, transcripts: TranscriptEchoDetector.annotate(try transcripts(meetingId: meetingId)), screens: try screens(meetingId: meetingId))
     }
 
     public func enqueue(_ job: AnalysisJob) throws {
@@ -273,7 +273,7 @@ public final class MeetingStore: @unchecked Sendable {
         try query("""
             SELECT id,meeting_id,kind,status,retry_count,error,priority,available_at
             FROM analysis_jobs WHERE meeting_id=? AND kind=?
-            ORDER BY updated_at DESC,created_at DESC LIMIT 1
+            ORDER BY updated_at DESC,created_at DESC,rowid DESC LIMIT 1
             """, [.text(meetingId), .text(kind)]) { job = try decodeJob($0) }
         return job
     }

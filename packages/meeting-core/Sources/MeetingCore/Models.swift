@@ -71,6 +71,7 @@ public struct TranscriptEvent: Codable, Equatable, Sendable, Identifiable {
     public var source: AudioSource
     public var isFinal: Bool
     public var screenRefs: [ScreenReference]
+    public var possibleEchoOf: String? = nil
 
     public init(id: String = UUID().uuidString, meetingId: String, revision: Int = 1, timeRange: TimeRange, speaker: Speaker = .unknown, text: String, source: AudioSource, isFinal: Bool = false, screenRefs: [ScreenReference] = []) {
         precondition(revision > 0)
@@ -78,7 +79,7 @@ public struct TranscriptEvent: Codable, Equatable, Sendable, Identifiable {
         self.speaker = speaker; self.text = text; self.source = source; self.isFinal = isFinal; self.screenRefs = screenRefs
     }
 
-    enum CodingKeys: String, CodingKey { case id, meetingId, revision, startedAtMs, endedAtMs, type, speaker, text, source, isFinal, screenRefs }
+    enum CodingKeys: String, CodingKey { case id, meetingId, revision, startedAtMs, endedAtMs, type, speaker, text, source, isFinal, screenRefs, possibleEchoOf }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id); meetingId = try c.decode(String.self, forKey: .meetingId)
@@ -87,6 +88,7 @@ public struct TranscriptEvent: Codable, Equatable, Sendable, Identifiable {
         speaker = try c.decode(Speaker.self, forKey: .speaker); text = try c.decode(String.self, forKey: .text)
         source = try c.decode(AudioSource.self, forKey: .source); isFinal = try c.decode(Bool.self, forKey: .isFinal)
         screenRefs = try c.decodeIfPresent([ScreenReference].self, forKey: .screenRefs) ?? []
+        possibleEchoOf = try c.decodeIfPresent(String.self, forKey: .possibleEchoOf)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -94,6 +96,7 @@ public struct TranscriptEvent: Codable, Equatable, Sendable, Identifiable {
         try c.encode(timeRange.startedAtMs, forKey: .startedAtMs); try c.encodeIfPresent(timeRange.endedAtMs, forKey: .endedAtMs)
         try c.encode("speech", forKey: .type); try c.encode(speaker, forKey: .speaker); try c.encode(text, forKey: .text)
         try c.encode(source, forKey: .source); try c.encode(isFinal, forKey: .isFinal); try c.encode(screenRefs, forKey: .screenRefs)
+        try c.encodeIfPresent(possibleEchoOf, forKey: .possibleEchoOf)
     }
 }
 
