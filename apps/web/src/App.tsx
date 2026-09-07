@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, isAuthenticationError, subscribe } from "./api";
-import type { MeetingStatus, ScreenEvent, ServerEvent, Settings, TranscriptEvent, TranscriptionProgress } from "./types";
+import type { MeetingStatus, ScreenEvent, ServerEvent, Settings, TranscriptEvent, TranscriptionProgress, SummaryItem } from "./types";
+
+import { AuthenticatedImage } from "./AuthenticatedImage";
+import { SummaryEvidence } from "./SummaryEvidence";
 
 type Page = "home" | "meetings" | "detail" | "settings";
 const labels: Record<MeetingStatus, string> = { idle: "待機", capturing: "収録中", finalizing: "確定中", analyzing: "解析中", completed: "収録完了", interrupted: "中断", failed: "失敗", partially_completed: "一部完了" };
@@ -118,7 +121,7 @@ function MeetingDetail({ id, back }: { id: string; back: () => void }) {
   return <><button className="back" onClick={back}>← ミーティング一覧</button><header className="detail-header"><div>{meeting.data && <StatusBadge status={meeting.data.status}/>}<h1>{meeting.data?.title ?? "読み込み中…"}</h1><p>{meeting.data ? date(meeting.data.startedAt) : ""} · {meeting.data ? formatTime(duration(meeting.data.startedAt, meeting.data.endedAt)) : ""}</p></div></header>
     {meeting.data && ["interrupted", "failed", "partially_completed"].includes(meeting.data.status) && <div className="evidence-warning"><strong>一部の処理が完了していません</strong><span>取得済みのTranscriptとScreen Evidenceは引き続き閲覧できます。</span></div>}
     <div className="tabs"><button className={tab === "timeline" ? "active" : ""} onClick={() => setTab("timeline")}>Timeline</button><button className={tab === "summary" ? "active" : ""} onClick={() => setTab("summary")}>Summary</button></div>
-    {tab === "timeline" ? <><TranscriptionRecovery value={transcriptionProgress.data} transcriptCount={transcript.data?.length ?? 0} retrying={retryTranscription.isPending} error={retryTranscription.error} onRetry={() => retryTranscription.mutate()}/><div className="timeline-layout">{transcript.error && <ErrorBox error={transcript.error}/>}<TranscriptPanel items={transcript.data ?? []} loading={transcript.isLoading} focus={focusTranscript} onScreen={(screenId) => { setFocusScreen(screenId); document.getElementById(`screen-${screenId}`)?.scrollIntoView({ behavior: "smooth" }); }}/><ScreensPanel items={screens.data ?? []} loading={screens.isLoading} focus={focusScreen} onTranscript={(screenId) => { const hit = transcript.data?.find((t) => t.screenRefs.some((ref) => ref.screenId === screenId)); if (hit) { setFocusTranscript(hit.id); document.getElementById(`transcript-${hit.id}`)?.scrollIntoView({ behavior: "smooth" }); } }}/></div></> : <SummaryPanel value={summary.data} progress={summaryProgress.data} loading={summary.isLoading || summaryProgress.isLoading} error={summary.error ?? summaryProgress.error ?? summarize.error} generating={summarize.isPending} onGenerate={() => summarize.mutate()}/>}</>;
+    {tab === "timeline" ? <><TranscriptionRecovery value={transcriptionProgress.data} transcriptCount={transcript.data?.length ?? 0} retrying={retryTranscription.isPending} error={retryTranscription.error} onRetry={() => retryTranscription.mutate()}/><div className="timeline-layout">{transcript.error && <ErrorBox error={transcript.error}/>}<TranscriptPanel items={transcript.data ?? []} loading={transcript.isLoading} focus={focusTranscript} onScreen={(screenId) => { setFocusScreen(screenId); document.getElementById(`screen-${screenId}`)?.scrollIntoView({ behavior: "smooth" }); }}/><ScreensPanel items={screens.data ?? []} loading={screens.isLoading} focus={focusScreen} onTranscript={(screenId) => { const hit = transcript.data?.find((t) => t.screenRefs.some((ref) => ref.screenId === screenId)); if (hit) { setFocusTranscript(hit.id); document.getElementById(`transcript-${hit.id}`)?.scrollIntoView({ behavior: "smooth" }); } }}/></div></> : <SummaryPanel transcripts={transcript.data ?? []} screens={screens.data ?? []} evidenceLoading={transcript.isLoading || screens.isLoading} evidenceError={transcript.error ?? screens.error} value={summary.data} progress={summaryProgress.data} loading={summary.isLoading || summaryProgress.isLoading} error={summary.error ?? summaryProgress.error ?? summarize.error} generating={summarize.isPending} onGenerate={() => summarize.mutate()}/>}</>;
 }
 
 function TranscriptionRecovery({ value, transcriptCount, retrying, error, onRetry }: { value?: TranscriptionProgress; transcriptCount: number; retrying: boolean; error: Error | null; onRetry: () => void }) {
@@ -136,15 +139,7 @@ function ScreensPanel({ items, loading, focus, onTranscript }: { items: ScreenEv
   return <section className="panel screens"><div className="panel-title"><h2>Screen Timeline</h2><span>{items.length} frames</span></div>{loading ? <Empty>読み込み中…</Empty> : !items.length ? <Empty>画面Evidenceはまだありません。</Empty> : items.map((item) => <article id={`screen-${item.id}`} className={focus === item.id ? "screen-item focused" : "screen-item"} key={item.id}><AuthenticatedImage path={item.imageUrl} alt={item.description ?? item.id}/><div><time>{formatTime(item.startedAtMs)}</time><h3>{item.description ?? "画面を解析中"}</h3>{item.analysisStatus === "running" && <span className="processing">◌ 解析中</span>}{item.analysisStatus === "failed" && <span className="failed-text">解析失敗 · 画像は保存済み</span>}<p>{item.ocr}</p><button className="text-button" onClick={() => onTranscript(item.id)}>関連する発話を見る →</button></div></article>)}</section>;
 }
 
-function AuthenticatedImage({ path, alt }: { path: string; alt: string }) {
-  const image = useQuery({ queryKey: ["screen-image", path], queryFn: () => api.screenImage(path), staleTime: Infinity });
-  const objectUrl = useMemo(() => image.data ? URL.createObjectURL(image.data) : undefined, [image.data]);
-  useEffect(() => () => { if (objectUrl) URL.revokeObjectURL(objectUrl); }, [objectUrl]);
-  if (image.isLoading) return <div className="screen-image-state">画像を読み込み中…</div>;
-  if (image.isError || !objectUrl) return <div className="screen-image-state error">画像を表示できません</div>;
-  return <img src={objectUrl} alt={alt}/>;
-}
-function SummaryPanel({ value, progress, loading, error, generating, onGenerate }: { value: Awaited<ReturnType<typeof api.summary>> | undefined; progress: Awaited<ReturnType<typeof api.summaryProgress>> | undefined; loading: boolean; error: Error | null; generating: boolean; onGenerate: () => void }) {
+function SummaryPanel({ value, progress, loading, error, generating, onGenerate, transcripts, screens, evidenceLoading, evidenceError }: { transcripts: TranscriptEvent[]; screens: ScreenEvent[]; evidenceLoading: boolean; evidenceError: Error | null; value: Awaited<ReturnType<typeof api.summary>> | undefined; progress: Awaited<ReturnType<typeof api.summaryProgress>> | undefined; loading: boolean; error: Error | null; generating: boolean; onGenerate: () => void }) {
   if (loading) return <Empty>要約を確認しています…</Empty>;
   if (error) return <div className="error-box"><strong>要約の取得に失敗しました</strong><span>{error.message}</span><button className="primary" onClick={onGenerate} disabled={generating}>{generating ? "再生成を依頼中…" : "要約を再生成"}</button></div>;
   if (!value) {
@@ -152,9 +147,19 @@ function SummaryPanel({ value, progress, loading, error, generating, onGenerate 
     const state = progress?.state ?? "not_started";
     return <div className={`summary-progress ${state}`}><span className="progress-dot"/><strong>{messages[state]}</strong>{progress?.error && <small>{progress.error}</small>}{["not_started", "failed"].includes(state) && <button className="primary" onClick={onGenerate} disabled={generating}>{generating ? "生成を依頼中…" : state === "failed" ? "要約を再生成" : "今すぐ要約を生成"}</button>}</div>;
   }
-  return <div className="summary"><section><p className="eyebrow">OVERVIEW</p><h2>要約</h2><p className="summary-copy">{value.summary}</p><div className="topics">{value.topics.map((topic) => <span key={topic}>{topic}</span>)}</div></section><div className="summary-columns"><SummaryList title="決定事項" marker="✓" items={value.decisions}/><SummaryList title="未決事項" marker="?" items={value.openQuestions}/><section><h2>Action Items</h2>{value.actionItems.map((item) => <div className="action" key={item.text}><span>→</span><div><b>{item.text}</b><small>{item.assignee ?? "担当者未定"}{item.dueAt ? ` · ${date(item.dueAt)}` : ""}</small></div></div>)}</section></div></div>;
+  const evidence = { transcripts, screens, evidenceLoading, evidenceError };
+  return <div className="summary"><section><p className="eyebrow">OVERVIEW</p><h2>要約</h2><p className="summary-copy">{value.summary}</p><div className="topics">{value.topics.map((topic) => <span key={topic}>{topic}</span>)}</div></section>
+    <p className="evidence-note">各項目に関連する画面と発話を表示します。画像を押すと拡大できます。「発話中に表示」は時間の一致を示し、その画面について話したことを保証するものではありません。</p>
+    {evidenceError && <ErrorBox error={evidenceError}/>}
+    <div className="summary-columns"><SummaryList title="決定事項" marker="✓" items={value.decisions} {...evidence}/><SummaryList title="未決事項" marker="?" items={value.openQuestions} {...evidence}/><SummaryList title="Action Items" marker="→" items={value.actionItems} {...evidence}/></div>
+  </div>;
 }
-function SummaryList({ title, marker, items }: { title: string; marker: string; items: { text: string }[] }) { return <section><h2>{title}</h2>{items.map((item) => <div className="summary-item" key={item.text}><span>{marker}</span>{item.text}</div>)}</section>; }
+function SummaryList({ title, marker, items, transcripts, screens, evidenceLoading, evidenceError }: { title: string; marker: string; items: SummaryItem[]; transcripts: TranscriptEvent[]; screens: ScreenEvent[]; evidenceLoading: boolean; evidenceError: Error | null }) {
+  return <section><h2>{title}</h2>{!items.length && <p className="evidence-note">該当する項目はありません。</p>}{items.map((item, index) => <article className="summary-entry" key={`${index}-${item.text}`}>
+    <div className="summary-entry-text"><span className="summary-marker">{marker}</span><div><p>{item.text}</p>{(item.assignee || item.dueAt) && <small>{item.assignee ?? "担当者未定"}{item.dueAt ? ` · ${date(item.dueAt)}` : ""}</small>}</div></div>
+    {evidenceLoading ? <p className="evidence-note">関連する画面と発話を読み込み中…</p> : evidenceError ? <p className="evidence-note">関連する画面と発話を読み込めませんでした。</p> : <SummaryEvidence item={item} transcripts={transcripts} screens={screens}/>}
+  </article>)}</section>;
+}
 
 function SettingsPage() {
   const client = useQueryClient(); const query = useQuery({ queryKey: ["settings"], queryFn: api.settings }); const [draft, setDraft] = useState<Settings>();
