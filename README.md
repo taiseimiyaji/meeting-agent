@@ -72,3 +72,7 @@ Screen Recording does not appear in macOS System Settings until the app has requ
 - Video is not retained by default. A short ephemeral ring buffer is cleared after normal finalization.
 - External processing requires explicit, per-category consent and an audit record.
 - Never add real confidential meetings to fixtures.
+
+## Codexによる要約
+
+ChatGPTログイン済みのローカルCodexで、確定済み文字起こしと任意の保存画面から議事録を生成できます。APIキーは使わず、実行前にサブスクリプション利用枠を確認します。[設定と制限](docs/codex-subscription-summary.md)を参照してください。

@@ -21,3 +21,5 @@ main { grid-column:2; max-width:1300px;width:100%;padding:52px 6vw 80px;margin:a
 @media(max-width:700px){.summary-entry{grid-template-columns:minmax(0,1fr);gap:12px}}
 .echo-notice{padding:12px;background:#f7f1e4;border-radius:8px;margin-top:12px;font-size:12px;color:#715719;line-height:1.6}.echo-notice p{margin:0 0 6px}.echo-notice label{display:flex;align-items:center;gap:6px}
 .summary-regenerate{margin-bottom:14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+
+.codex-settings{padding:16px 0;color:#35574c;font-size:13px;line-height:1.7}.codex-settings button{margin-top:14px}.summary>.overview-evidence,.summary>.speaker-attributions{margin-top:20px;background:#fff;color:#17352d;border:1px solid #dce3de}.speaker-attributions article{border-top:1px solid #dce3de;padding-top:12px}

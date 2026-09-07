@@ -83,6 +83,12 @@ public struct APIRouter: Sendable {
                 return .json(200, value)
             } catch { return .problem(400, error.localizedDescription) }
         }
+        if route == "settings/codex-status", request.method == .GET {
+            do {
+                try await CodexCompanion.checkLogin()
+                return .json(200, APIProblem(error: "ChatGPTでログイン済みです。サブスクリプション利用枠の残量も確認できました。"))
+            } catch { return .problem(409, error.localizedDescription) }
+        }
         if route == "settings/prepare-speech-model", request.method == .POST {
             if try repository.settings().sttProvider == "whisperkit" {
                 try await repository.prepareWhisperModel()

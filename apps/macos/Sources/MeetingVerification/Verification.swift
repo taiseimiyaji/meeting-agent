@@ -5,6 +5,7 @@ import MeetingCapture
 import MeetingCore
 import MeetingPipeline
 import LocalAPI
+import CodexSupport
 
 struct VerificationError: Error { let message: String }
 func check(_ condition: Bool, _ message: String) throws {
@@ -60,6 +61,23 @@ actor TestFileTranscriber: FileTranscriber {
 @main struct Verification {
     static func main() async throws {
         let args = Array(CommandLine.arguments.dropFirst())
+        if args.first == "codex-live" {
+            let report = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("MeetingCodexVerification.txt")
+            do {
+                let helper = args.count > 1 && args[1] != "--summarize" ? URL(fileURLWithPath: args[1]) : CodexCompanion.bundledHelper
+                try await CodexCompanion.checkLogin(helper: helper)
+                if args.contains("--summarize") { try await verifyCodexVisualSummary(helper: helper) }
+                try FileManager.default.createDirectory(at: report.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data("PASS: companion ChatGPT login; visual summary check: \(args.contains("--summarize"))\n".utf8).write(to: report)
+                print("PASS: sandboxed app launched companion and verified ChatGPT login")
+            } catch {
+                try? FileManager.default.createDirectory(at: report.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? Data("FAIL: \(error as NSError)".utf8).write(to: report)
+                throw error
+            }
+            return
+        }
+        if args.first == "codex-contract" { try verifyCodexContract(); return }
         if args.first == "summary-readiness" { try await verifySummaryReadiness(); return }
         if args.first == "echo" { try await verifyEchoes(); return }
         let models = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/MeetingAgentVerification/Models")
@@ -95,6 +113,8 @@ actor TestFileTranscriber: FileTranscriber {
             }
             return
         }
+        try verifyCodexContract()
+        try await verifyCodexFailurePaths()
         try await verifySummaryReadiness()
         try await verifyEchoes()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("MeetingVerification-\(UUID().uuidString)")
@@ -316,4 +336,54 @@ func verifyEchoes() async throws {
     try check(summary?.summary == message && summary?.decisions.first?.evidenceIds == [remote.id], "summary worker uses the remote evidence once")
     try repository.enqueue(meetingId: remote.meetingId, kind: "summarize")
     try check(try repository.summaryProgress(meetingId: remote.meetingId).state == .queued, "regeneration reports queued even when an older summary exists")
+}
+
+func verifyCodexContract() throws {
+    let event = MeetingCore.TranscriptEvent(id: "speech", meetingId: "fixture", timeRange: .init(startedAtMs: 1000, endedAtMs: 2000), text: "来週公開します。", source: .system, isFinal: true)
+    let input = CodexMeetingInput(transcripts: [event], screens: [.init(id: "s1", timestampMs: 1000, fileName: "screen-0.jpg"), .init(id: "s2", timestampMs: 2000, fileName: "screen-1.jpg")], omittedScreenCount: 0)
+    try input.validate()
+    var value = MeetingCore.MeetingSummary(summary: "来週公開します。", decisions: [.init(text: "来週公開", evidenceIds: [event.id])])
+    value.overviewEvidenceIds = [event.id]
+    value.speakerAttributions = [.init(transcriptId: event.id, name: "田中", evidenceIds: ["s1", "s2"], reason: "両方の画面で田中の発話中表示")]
+    try input.validate(value)
+    try check(true, "grounded summary and covered visual speaker pass")
+    func rejects(_ summary: MeetingCore.MeetingSummary, input: CodexMeetingInput = input) -> Bool {
+        do { try input.validate(summary); return false } catch { return true }
+    }
+    var forged = value; forged.decisions[0].evidenceIds = ["not-in-meeting"]
+    try check(rejects(forged), "fabricated evidence cannot be saved")
+    forged = value; forged.overviewEvidenceIds = []
+    try check(rejects(forged), "overview requires transcript evidence")
+    forged = value; forged.speakerAttributions?[0].evidenceIds = ["s1"]
+    try check(rejects(forged), "single screenshot cannot identify an entire utterance")
+    forged = value; forged.speakerAttributions?[0].transcriptId = "fabricated"
+    try check(rejects(forged), "speaker must reference actual speech")
+    var microphone = input; microphone.transcripts[0].source = .microphone
+    try check(rejects(value, input: microphone), "microphone echo is never used as participant identity")
+    var long = input; long.transcripts[0].timeRange.endedAtMs = 20_000
+    try check(rejects(value, input: long), "twenty-second legacy chunks cannot receive a guessed speaker")
+    var distant = input; distant.screens[1].timestampMs = 20_000
+    try check(rejects(value, input: distant), "unrelated screenshot timing is rejected")
+    let decoder = JSONDecoder()
+    let old = Data(#"{"summary":"以前の要約","decisions":[],"actionItems":[],"openQuestions":[],"topics":[]}"#.utf8)
+    try check(try decoder.decode(MeetingCore.MeetingSummary.self, from: old).speakerAttributions == nil, "existing summaries decode without new fields")
+    let args = CodexRunner.arguments(directory: URL(fileURLWithPath: "/tmp/fixture"), input: input)
+    try check(args.contains("forced_login_method=\"chatgpt\"") && args.contains("--ignore-user-config"), "Codex enforces ChatGPT auth independently of user model config")
+    let runner = try CodexRunner(executable: URL(fileURLWithPath: "/usr/bin/false"), environment: ["OPENAI_API_KEY": "fixture-do-not-use", "CODEX_API_KEY": "fixture-do-not-use", "OPENAI_BASE_URL": "https://invalid.example"])
+    try check(runner.environment["OPENAI_API_KEY"] == nil && runner.environment["CODEX_API_KEY"] == nil && runner.environment["OPENAI_BASE_URL"] == nil, "API key and endpoint overrides are never inherited")
+    var quota: [String: Any] = ["primary": ["usedPercent": 14.0], "credits": ["hasCredits": false, "unlimited": false]]
+    try check(try CodexAllowance.validate(["rateLimits": quota]).usedPercent == 14, "remaining subscription quota without extra credits is accepted")
+    func rejectsQuota(_ bucket: [String: Any]) -> Bool {
+        do { _ = try CodexAllowance.validate(["rateLimits": bucket]); return false } catch { return true }
+    }
+    quota["primary"] = ["usedPercent": 100.0]
+    try check(rejectsQuota(quota), "exhausted subscription quota blocks inference")
+    quota["primary"] = ["usedPercent": 14.0]; quota["credits"] = ["hasCredits": true, "unlimited": false]
+    try check(rejectsQuota(quota), "available extra credits cannot silently fund inference")
+    quota["credits"] = NSNull()
+    try check(rejectsQuota(quota), "unknown credit state fails closed")
+    let schema = try JSONSerialization.jsonObject(with: Data(CodexSchema.json.utf8)) as! [String: Any]
+    try check(schema["additionalProperties"] as? Bool == false, "Codex output schema is valid strict JSON")
+    var settings = AgentSettings(); settings.summaryProvider = "codex_chatgpt"; try settings.validate()
+    try check(try decoder.decode(AgentSettings.self, from: Data(#"{"sttProvider":"apple_speech","summaryProvider":"local_heuristic","retentionDays":0,"recoveryMode":true}"#.utf8)).summaryProvider == "local_heuristic", "old preferences do not silently enable external processing")
 }

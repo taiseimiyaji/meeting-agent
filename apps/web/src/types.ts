@@ -35,6 +35,7 @@ export interface TranscriptEvent {
   isFinal: boolean;
   screenRefs: ScreenRef[];
   possibleEchoOf?: string | null;
+  attributedSpeaker?: SpeakerAttribution;
 }
 export interface ScreenEvent {
   id: string;
@@ -48,7 +49,10 @@ export interface ScreenEvent {
 }
 export interface ActionItem { id?: string; text: string; owner?: string | null; dueDate?: string | null; }
 export interface SummaryItem { text: string; evidenceIds: string[]; assignee?: string | null; dueAt?: string | null; }
+export interface SpeakerAttribution { transcriptId: string; name: string; evidenceIds: string[]; reason: string; }
 export interface MeetingSummary {
+  speakerAttributions?: SpeakerAttribution[];
+  overviewEvidenceIds?: string[];
   summary: string;
   decisions: SummaryItem[];
   actionItems: SummaryItem[];
@@ -72,7 +76,8 @@ export interface MeetingPage { items: Meeting[]; nextCursor?: string | null; }
 export interface Timeline { transcript: TranscriptEvent[]; screens: ScreenEvent[]; }
 export interface Settings {
   sttProvider: "apple_speech" | "speech_analyzer" | "whisperkit";
-  summaryProvider: "local_heuristic" | "apple_foundation_models";
+  summaryProvider: "local_heuristic" | "apple_foundation_models" | "codex_chatgpt";
+  codexIncludeScreens?: boolean;
   retentionDays: number;
   recoveryMode: boolean;
 }

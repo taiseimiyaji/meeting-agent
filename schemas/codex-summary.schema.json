@@ -1,0 +1,113 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "summary",
+    "overviewEvidenceIds",
+    "decisions",
+    "actionItems",
+    "openQuestions",
+    "topics",
+    "speakerAttributions"
+  ],
+  "properties": {
+    "summary": {
+      "type": "string"
+    },
+    "overviewEvidenceIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    },
+    "actionItems": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    },
+    "openQuestions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    },
+    "topics": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "speakerAttributions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "transcriptId",
+          "name",
+          "evidenceIds",
+          "reason"
+        ],
+        "properties": {
+          "transcriptId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "evidenceIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text",
+        "evidenceIds",
+        "assignee",
+        "dueAt"
+      ],
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "assignee": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dueAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}
