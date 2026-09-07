@@ -60,6 +60,7 @@ actor TestFileTranscriber: FileTranscriber {
 @main struct Verification {
     static func main() async throws {
         let args = Array(CommandLine.arguments.dropFirst())
+        if args.first == "summary-readiness" { try await verifySummaryReadiness(); return }
         let models = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/MeetingAgentVerification/Models")
         if args.first == "prepare-whisper" {
             try await WhisperFileTranscriber(directory: models).prepareModel(); print("WhisperKit model ready"); return
@@ -93,6 +94,7 @@ actor TestFileTranscriber: FileTranscriber {
             }
             return
         }
+        try await verifySummaryReadiness()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("MeetingVerification-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -225,4 +227,46 @@ actor TestFileTranscriber: FileTranscriber {
         try check(longChunks.map(\.id).count == Set(longChunks.map(\.id)).count, "audio unit IDs remain unique")
         print("All deterministic integration checks passed. Real ASR accuracy and wall-clock capture require separate evaluation.")
     }
+}
+
+func verifySummaryReadiness() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try MeetingStore(path: root.appendingPathComponent("test.sqlite").path)
+    let evidence = root.appendingPathComponent("Meetings")
+    let repository = try LocalMeetingRepository(store: store, evidenceRoot: evidence)
+    var settings = AgentSettings(); settings.summaryProvider = "local_heuristic"
+    try repository.saveSettings(settings)
+    let runtime = try MeetingAnalysisRuntime(store: store, evidenceRoot: evidence)
+    let meeting = Meeting(id: "waiting", endedAt: Date(), status: .completed)
+    try store.save(meeting)
+    let writer = try AudioArchiveWriter(directory: evidence.appendingPathComponent(meeting.id).appendingPathComponent("Audio"))
+    try writer.write(try pcm(), kind: .microphone, timestampMs: 0); writer.finish()
+    let text = "保存済みの発話からこの方針を採用することに決定しました。"
+    try store.save(MeetingCore.TranscriptEvent(meetingId: meeting.id, timeRange: .init(startedAtMs: 0, endedAtMs: 1000), speaker: .self, text: text, source: .microphone, isFinal: true))
+    try store.enqueue(AnalysisJob(id: "summary-waiting", meetingId: meeting.id, kind: "summarize"))
+    let start = Date().addingTimeInterval(1)
+    for i in 0..<6 { _ = try await runtime.processNext(now: start.addingTimeInterval(Double(i * 11))) }
+    let waiting = try store.analysisJob(id: "summary-waiting")
+    try check(waiting?.status == .pending && waiting?.retryCount == 0, "summary dependency waiting never consumes retry attempts")
+    try check(waiting?.error == "文字起こしの完了を待っています。", "waiting has an actionable Japanese status instead of transcriptionEmpty")
+    try check(try store.activeSummary(meetingId: meeting.id) == nil, "pending transcription is not summarized prematurely")
+    try store.enqueue(AnalysisJob(meetingId: meeting.id, kind: "transcribe", status: .failed, error: "Some units failed"))
+    _ = try await runtime.processNext(now: start.addingTimeInterval(80))
+    let partial = try store.activeSummary(meetingId: meeting.id)
+    try check(partial?.summary.contains("一部の音声が未文字起こし") == true && partial?.summary.contains(text) == true, "terminal ASR failure produces a clearly marked partial summary from available speech")
+    try check(try store.analysisJob(id: "summary-waiting")?.status == .completed, "partial summary completes instead of failing transcriptionEmpty")
+    let empty = Meeting(id: "empty", endedAt: Date(), status: .completed)
+    try store.save(empty)
+    try store.enqueue(AnalysisJob(id: "summary-empty", meetingId: empty.id, kind: "summarize"))
+    _ = try await runtime.processNext(now: start.addingTimeInterval(90))
+    let failed = try store.analysisJob(id: "summary-empty")
+    try check(failed?.status == .failed && failed?.error?.contains("確定済みの文字起こしがありません") == true, "truly empty transcript reports the correct recovery action")
+    try check(try store.activeSummary(meetingId: empty.id) == nil, "empty transcript cannot produce a fabricated summary")
+    let recording = Meeting(id: "recording", status: .capturing)
+    try store.save(recording)
+    try store.enqueue(AnalysisJob(id: "summary-recording", meetingId: recording.id, kind: "summarize"))
+    _ = try await runtime.processNext(now: start.addingTimeInterval(100))
+    try check(try store.analysisJob(id: "summary-recording")?.error == "録音の終了を待っています。", "recording in progress is distinct from an empty transcript")
 }

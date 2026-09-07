@@ -251,6 +251,12 @@ public final class MeetingStore: @unchecked Sendable {
         return job
     }
 
+    public func deferAnalysisJob(id: String, reason: String, availableAt: Date, now: Date = Date()) throws {
+        guard try changeCount("UPDATE analysis_jobs SET status='pending',error=?,available_at=?,updated_at=? WHERE id=? AND status='processing'", [.text(reason), .text(Self.date(availableAt)), .text(Self.date(now)), .text(id)]) == 1 else {
+            throw MeetingStoreError.invalidData("Analysis job \(id) is not processing")
+        }
+    }
+
     public func failAnalysisJob(id: String, error message: String, now: Date = Date()) throws {
         guard try changeCount("UPDATE analysis_jobs SET status='failed',error=?,updated_at=? WHERE id=? AND status='processing'", [.text(message), .text(Self.date(now)), .text(id)]) == 1 else {
             throw MeetingStoreError.invalidData("Analysis job \(id) is not processing")
@@ -273,7 +279,7 @@ public final class MeetingStore: @unchecked Sendable {
         try query("""
             SELECT id,meeting_id,kind,status,retry_count,error,priority,available_at
             FROM analysis_jobs WHERE meeting_id=? AND kind=?
-            ORDER BY updated_at DESC,created_at DESC LIMIT 1
+            ORDER BY updated_at DESC,created_at DESC,rowid DESC LIMIT 1
             """, [.text(meetingId), .text(kind)]) { job = try decodeJob($0) }
         return job
     }
