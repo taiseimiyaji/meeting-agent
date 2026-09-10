@@ -49,8 +49,9 @@ it("renders authenticated screenshots, the cited speech, and an accessible enlar
   const image = await screen.findByRole("img", { name: "設計図" });
   expect(image.getAttribute("src")).toMatch(/^blob:test-image-/);
   expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(image.getAttribute("src"));
-  expect(fetchImage).toHaveBeenCalledWith(images[0].imageUrl);
-  expect(fetchImage).toHaveBeenCalledTimes(1);
+  expect(fetchImage).toHaveBeenCalledWith(images[0].imageUrl, expect.any(AbortSignal));
+  // StrictMode cancels the first mount; only the remounted request stays active.
+  expect(fetchImage.mock.calls.filter((call) => !(call[1] as AbortSignal).aborted)).toHaveLength(1);
   expect(screen.getByText(/発話中に表示/)).toBeTruthy();
   expect(screen.getByText(speech[0].text)).toBeTruthy();
   expect(screen.queryByText("別の話題")).toBeNull();

@@ -49,11 +49,25 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
         try enqueueMissingSummaries()
         try await worker.start()
         scheduler = Task { [weak self] in
+            var previousVersion: Int64 = -1
+            var nextRecovery = Date.distantPast
+            var nextRetention = Date.distantPast
             while !Task.isCancelled {
                 do {
-                    _ = try self?.enqueueMissingTranscriptions()
-                    _ = try self?.enqueueMissingSummaries()
-                    try self?.applyRetention()
+                    guard let self else { break }
+                    let now = Date()
+                    let version = self.store.changeVersion
+                    let candidates = try self.store.maintenanceMeetings()
+                    if version != previousVersion || now >= nextRecovery {
+                        _ = try self.enqueueMissingTranscriptions()
+                        _ = try self.enqueueMissingSummaries()
+                        previousVersion = self.store.changeVersion
+                        nextRecovery = now.addingTimeInterval(candidates.contains(where: { $0.status == .capturing }) ? 5 : 60)
+                    }
+                    if now >= nextRetention {
+                        try self.applyRetention()
+                        nextRetention = now.addingTimeInterval(3600)
+                    }
                     try await Task.sleep(for: .seconds(2))
                 } catch { do { try await Task.sleep(for: .seconds(2)) } catch { break } }
             }
@@ -64,12 +78,12 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
     /// summarize job. Safe to call repeatedly because active jobs are deduped.
     @discardableResult public func enqueueMissingSummaries() throws -> Int {
         var count = 0
-        for meeting in try store.meetings(limit: 10_000) {
+        for meeting in try store.maintenanceMeetings() {
             guard [.completed, .partiallyCompleted, .interrupted].contains(meeting.status),
                   try store.activeSummary(meetingId: meeting.id) == nil else { continue }
+            if let job = try store.latestAnalysisJob(meetingId: meeting.id, kind: "summarize"), job.status != .completed { continue }
             if (try? Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot)) ?? true,
                try store.latestAnalysisJob(meetingId: meeting.id, kind: "transcribe")?.status != .failed { continue }
-            if try store.latestAnalysisJob(meetingId: meeting.id, kind: "summarize")?.status == .failed { continue }
             if try store.enqueueIfNeeded(.init(meetingId: meeting.id, kind: "summarize", priority: 2)) { count += 1 }
         }
         return count
@@ -77,9 +91,11 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
 
     @discardableResult public func enqueueMissingTranscriptions() throws -> Int {
         var count = 0
-        for meeting in try store.meetings(limit: 10_000) {
-            guard [.capturing, .completed, .partiallyCompleted, .interrupted, .failed].contains(meeting.status),
-                  (try? Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot)) ?? true else { continue }
+        for meeting in try store.maintenanceMeetings() {
+            guard [.capturing, .completed, .partiallyCompleted, .interrupted, .failed].contains(meeting.status) else { continue }
+            if let job = try store.latestAnalysisJob(meetingId: meeting.id, kind: "transcribe"),
+               [.pending, .processing].contains(job.status) { continue }
+            guard (try? Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot)) ?? true else { continue }
             if let job = try store.latestAnalysisJob(meetingId: meeting.id, kind: "transcribe"), job.status == .failed {
                 let directory = evidenceRoot.appendingPathComponent(meeting.id).appendingPathComponent("Audio")
                 let fresh = try ([directory] + ["legacy-systemAudio", "legacy-microphone"].map { directory.appendingPathComponent($0) }).contains { folder in
@@ -314,7 +330,7 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
         let days = try settings.load().retentionDays
         guard days > 0 else { return }
         let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
-        for meeting in try store.meetings(limit: 10_000) {
+        for meeting in try store.retentionCandidates(before: cutoff) {
             guard let ended = meeting.endedAt, ended < cutoff,
                   [.completed, .partiallyCompleted, .interrupted, .failed].contains(meeting.status),
                   UUID(uuidString: meeting.id) != nil else { continue }

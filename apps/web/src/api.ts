@@ -30,9 +30,9 @@ class APIError extends Error {
 export function isAuthenticationError(error: unknown): boolean {
   return error instanceof APIError && error.status === 401;
 }
-async function requestBlob(path: string): Promise<Blob> {
+async function requestBlob(path: string, signal?: AbortSignal): Promise<Blob> {
   const response = await fetch(`${baseUrl}${path}`, {
-    headers: token ? { Authorization: token } : {},
+    headers: token ? { Authorization: token } : {}, signal,
   });
   if (!response.ok) throw new Error((await response.text()) || `Local API error (${response.status})`);
   return response.blob();
@@ -56,9 +56,9 @@ export const api = {
   },
   async transcript(id: string): Promise<TranscriptEvent[]> { return (await this.timeline(id)).transcript; },
   async screens(id: string): Promise<ScreenEvent[]> { return (await this.timeline(id)).screens; },
-  async screenImage(path: string): Promise<Blob> {
-    if (!useMock) return requestBlob(path);
-    return (await fetch(path)).blob();
+  async screenImage(path: string, signal?: AbortSignal): Promise<Blob> {
+    if (!useMock) return requestBlob(path, signal);
+    return (await fetch(path, { signal })).blob();
   },
   async summary(id: string): Promise<MeetingSummary | null> {
     if (!useMock) {

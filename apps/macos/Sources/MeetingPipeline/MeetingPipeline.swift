@@ -61,7 +61,7 @@ public actor MeetingPipeline {
     private var videoContinuation: AsyncStream<VideoFrameEvent>.Continuation?
     private var eventTask: Task<Void, Never>?
     private var transcriptTasks: [Task<Void, Never>] = []
-    private var ocrTasks: [Task<Void, Never>] = []
+    private var ocrTask: Task<Void, Never>?
     private var activeScreen: ScreenEvent?
     private var systemAudioOriginMs: Int64?
     private var microphoneAudioOriginMs: Int64?
@@ -249,28 +249,7 @@ public actor MeetingPipeline {
                 )
                 try store.save(screen)
                 activeScreen = screen
-                var processing = screen
-                processing.analysisStatus = .processing
-                try store.save(processing)
-                let task = Task { [store, ocr] in
-                    let result: Result<String, Error>
-                    do {
-                        result = .success(try await ocr.recognize(imageAt: keyFrame.url).text)
-                    } catch {
-                        result = .failure(error)
-                    }
-                    // Reload to preserve an endedAtMs written while OCR was running.
-                    guard var analyzed = try? store.screens(meetingId: meetingID).first(where: { $0.id == screen.id }) else { return }
-                    switch result {
-                    case .success(let text):
-                        analyzed.ocr = text
-                        analyzed.analysisStatus = .completed
-                    case .failure:
-                        analyzed.analysisStatus = .failed
-                    }
-                    try? store.save(analyzed)
-                }
-                ocrTasks.append(task)
+                startOCR(meetingID: meetingID)
             } catch { /* A malformed frame must not stop audio or later frames. */ }
         }
     }
@@ -321,9 +300,34 @@ public actor MeetingPipeline {
         transcriptTasks.removeAll()
     }
 
+    private func startOCR(meetingID: String) {
+        guard ocrTask == nil else { return }
+        ocrTask = Task(priority: .utility) { await self.processOCR(meetingID: meetingID) }
+    }
+
+    private func processOCR(meetingID: String) async {
+        defer { ocrTask = nil }
+        while !Task.isCancelled {
+            do {
+                guard var screen = try store.nextPendingScreen(meetingId: meetingID) else { return }
+                screen.analysisStatus = .processing
+                try store.save(screen)
+                let result: Result<String, Error>
+                do { result = .success(try await ocr.recognize(imageAt: URL(fileURLWithPath: screen.imagePath)).text) }
+                catch { result = .failure(error) }
+                // Reload one row to preserve the end time updated during OCR.
+                guard var analyzed = try store.screen(id: screen.id) else { continue }
+                switch result {
+                case .success(let text): analyzed.ocr = text; analyzed.analysisStatus = .completed
+                case .failure: analyzed.analysisStatus = .failed
+                }
+                try store.save(analyzed)
+            } catch { return }
+        }
+    }
+
     private func drainOCR() async {
-        for task in ocrTasks { _ = await task.result }
-        ocrTasks.removeAll()
+        _ = await ocrTask?.result
     }
 
     private func elapsedMs(for meeting: Meeting) -> Int64 {
