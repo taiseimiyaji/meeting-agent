@@ -80,9 +80,11 @@ public actor MeetingPipeline {
         self.microphoneTranscriber = microphoneTranscriber
         frameProcessor = try KeyFrameProcessor(configuration: configuration)
         ocr = VisionTextRecognizer()
-        audioArchive = try AudioArchiveWriter(
-            directory: configuration.keyFrameDirectory.deletingLastPathComponent().appendingPathComponent("Audio", isDirectory: true)
-        )
+        let audioDirectory = configuration.keyFrameDirectory.deletingLastPathComponent().appendingPathComponent("Audio", isDirectory: true)
+        audioArchive = try AudioArchiveWriter(directory: audioDirectory, onClosed: { chunk in
+            let id = audioDirectory.deletingLastPathComponent().lastPathComponent
+            if try store.meeting(id: id) != nil { try AudioInventory.record(chunk, folder: audioDirectory, meetingId: id, store: store) }
+        })
         transcriptionFinalizationGraceMs = configuration.transcriptionFinalizationGraceMs
     }
 
@@ -102,7 +104,7 @@ public actor MeetingPipeline {
                 guard let buffer = audio.pcmBuffer else {
                     audioArchive.recordFailure("Audio PCM conversion failed"); return
                 }
-                do { try audioArchive.write(buffer, kind: audio.kind, timestampMs: audio.timestamp.milliseconds) }
+                do { try audioArchive.enqueue(buffer, kind: audio.kind, timestampMs: audio.timestamp.milliseconds) }
                 catch { audioArchive.recordFailure(error.localizedDescription) }
             }
             }
@@ -176,7 +178,7 @@ public actor MeetingPipeline {
         if let stopError { throw stopError }
     }
 
-    public var captureEndedUnexpectedly: Bool { captureFailure != nil }
+    public var captureEndedUnexpectedly: Bool { captureFailure != nil || audioArchive.lastError != nil }
     public var failure: String? { captureFailure ?? audioArchive.lastError }
 
     private func startConsumers(meetingID: String) {

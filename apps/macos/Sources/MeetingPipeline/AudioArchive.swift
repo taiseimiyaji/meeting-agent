@@ -31,18 +31,52 @@ public final class AudioArchiveWriter: @unchecked Sendable {
     private var files: [CaptureOutputKind: OpenChunk] = [:]
     private let lock = NSLock()
     private var errors: [String] = []
+    private let errorLock = NSLock()
     private var savedFrames: Int64 = 0
     private let encoder = JSONEncoder()
+    private let ioQueue = DispatchQueue(label: "meeting-agent.audio-disk", qos: .userInitiated)
+    private let queueLock = NSLock()
+    private var pendingBytes = 0
+    private var accepting = true
+    private let maximumPendingBytes = 8 * 1024 * 1024
+    private var lastSpaceCheck = Date.distantPast
+    private let onClosed: (@Sendable (AudioChunk) throws -> Void)?
+    private let checkSpace: @Sendable () throws -> Void
 
-    public init(directory: URL, chunkDuration: Double = 20) throws {
+    public init(directory: URL, chunkDuration: Double = 20, checkSpace: (@Sendable () throws -> Void)? = nil, onClosed: (@Sendable (AudioChunk) throws -> Void)? = nil) throws {
+        self.onClosed = onClosed
         self.directory = directory
+        self.checkSpace = checkSpace ?? { try StorageCapacity.require(at: directory) }
         self.chunkDuration = max(0.1, chunkDuration)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    /// Capture callbacks only retain an owned buffer into a bounded serial queue.
+    public func enqueue(_ buffer: AVAudioPCMBuffer, kind: CaptureOutputKind, timestampMs: Int64) throws {
+        let size = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList).reduce(0) { $0 + Int($1.mDataByteSize) }
+        if let error = lastError { throw StorageCapacityError(error) }
+        let owned = OwnedAudioBuffer(buffer)
+        try queueLock.withLock {
+            guard accepting else { throw StorageCapacityError("録音の保存は終了しています。") }
+            guard pendingBytes + size <= maximumPendingBytes else {
+                throw StorageCapacityError("音声の保存が追いつかないため録音を停止しました。保存先の速度と空き容量を確認してください。")
+            }
+            pendingBytes += size
+            ioQueue.async { [self] in
+                defer { queueLock.withLock { pendingBytes -= size } }
+                do { try write(owned.buffer, kind: kind, timestampMs: timestampMs) }
+                catch { recordFailure(error.localizedDescription) }
+            }
+        }
     }
 
     public func write(_ buffer: AVAudioPCMBuffer, kind: CaptureOutputKind, timestampMs: Int64? = nil) throws {
         guard kind == .systemAudio || kind == .microphone, buffer.frameLength > 0 else { return }
         try lock.withLock {
+            if Date().timeIntervalSince(lastSpaceCheck) >= 1 {
+                try checkSpace()
+                lastSpaceCheck = Date()
+            }
             let timestamp = timestampMs ?? files[kind]?.lastEndMs ?? 0
             if let last = tails[kind]?.last {
                 let end = last.timestampMs + Int64(Double(last.buffer.frameLength) / last.buffer.format.sampleRate * 1000)
@@ -83,22 +117,25 @@ public final class AudioArchiveWriter: @unchecked Sendable {
     }
 
     public func recordFailure(_ message: String) {
-        lock.withLock {
-            if errors.last != message { errors.append(message) }
+        errorLock.withLock {
+            guard errors.last != message else { return }
+            errors.append(message)
             if errors.count > 100 { errors.removeFirst() }
             try? encoder.encode(errors).write(to: directory.appendingPathComponent("errors.json"), options: .atomic)
         }
     }
-    public var lastError: String? { lock.withLock { errors.last } }
+    public var lastError: String? { errorLock.withLock { errors.last } }
     public var archivedFrames: Int64 { lock.withLock { savedFrames } }
 
     public func finish() {
+        queueLock.withLock { accepting = false }
+        ioQueue.sync {}
         lock.withLock {
             tails.removeAll()
             for kind in Array(files.keys) {
-                do { try close(kind) } catch { errors.append(error.localizedDescription) }
+                do { try close(kind) } catch { recordFailure(error.localizedDescription) }
             }
-            if !errors.isEmpty { try? encoder.encode(errors).write(to: directory.appendingPathComponent("errors.json"), options: .atomic) }
+
         }
     }
 
@@ -138,6 +175,7 @@ public final class AudioArchiveWriter: @unchecked Sendable {
         // Shared state releases the handle even when write() still holds the unit.
         current.file = nil
         try save(current.metadata)
+        try onClosed?(current.metadata)
     }
     private func save(_ metadata: AudioChunk) throws {
         try encoder.encode(metadata).write(to: directory.appendingPathComponent("\(metadata.id).json"), options: .atomic)
@@ -181,4 +219,9 @@ private extension NSLock {
     func withLock<T>(_ body: () throws -> T) rethrows -> T {
         lock(); defer { unlock() }; return try body()
     }
+}
+
+private struct OwnedAudioBuffer: @unchecked Sendable {
+    let buffer: AVAudioPCMBuffer
+    init(_ buffer: AVAudioPCMBuffer) { self.buffer = buffer }
 }

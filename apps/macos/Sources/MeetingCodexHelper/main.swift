@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import CodexSupport
+import MeetingCore
 
 @MainActor final class HelperDelegate: NSObject, NSApplicationDelegate {
     private var started = false
@@ -18,6 +19,7 @@ import CodexSupport
         started = true
         Task {
             do {
+                try TemporaryWorkspace.mark(directory, role: "helper")
                 let runner = try CodexRunner()
                 if mode == "status" {
                     try await runner.checkLogin(directory: directory)

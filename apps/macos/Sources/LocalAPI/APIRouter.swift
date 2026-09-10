@@ -123,7 +123,7 @@ public struct APIRouter: Sendable {
         let screenPieces = route.split(separator: "/").map(String.init)
         if screenPieces.count == 3, screenPieces[0] == "screens", screenPieces[2] == "image", request.method == .GET {
             guard UUID(uuidString: screenPieces[1]) != nil else { return .problem(404, "Screen not found") }
-            guard let image = try repository.screenImage(id: screenPieces[1]) else { return .problem(404, "Screen not found") }
+            guard let image = try repository.screenImage(id: screenPieces[1], thumbnail: query("thumbnail", components) == "1") else { return .problem(404, "Screen not found") }
             return .init(status: 200, headers: ["Content-Type": image.contentType, "Cache-Control": "no-store"], body: image.data)
         }
 
