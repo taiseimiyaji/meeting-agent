@@ -9,6 +9,10 @@ public enum TranscriptEchoDetector {
         }, by: \.meetingId).mapValues { $0.sorted {
             $0.timeRange.startedAtMs == $1.timeRange.startedAtMs ? $0.id < $1.id : $0.timeRange.startedAtMs < $1.timeRange.startedAtMs
         } }
+        let maximumEnds = system.mapValues { rows in
+            var maximum: Int64 = 0
+            return rows.map { maximum = max(maximum, $0.timeRange.endedAtMs!); return maximum }
+        }
         return events.map { original in
             var event = original
             event.possibleEchoOf = nil
@@ -18,8 +22,19 @@ public enum TranscriptEchoDetector {
             // Brief acknowledgments are often spoken independently on both sides.
             guard text.count >= 10 else { return event }
             let start = event.timeRange.startedAtMs
-            let candidates = (system[event.meetingId] ?? []).filter {
-                $0.timeRange.startedAtMs < end && ($0.timeRange.endedAtMs ?? 0) > start
+            let rows = system[event.meetingId] ?? []
+            let ends = maximumEnds[event.meetingId] ?? []
+            // Binary search excludes earlier non-overlapping history, including
+            // cases where an unusually long utterance overlaps later chunks.
+            var low = 0, high = ends.count
+            while low < high {
+                let mid = (low + high) / 2
+                if ends[mid] <= start { low = mid + 1 } else { high = mid }
+            }
+            var candidates: [TranscriptEvent] = []
+            for remote in rows.dropFirst(low) {
+                if remote.timeRange.startedAtMs >= end { break }
+                if remote.timeRange.endedAtMs! > start { candidates.append(remote) }
             }
             for index in candidates.indices {
                 var combined = ""

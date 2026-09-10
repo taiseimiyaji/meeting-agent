@@ -9,16 +9,24 @@ struct ContentView: View {
     private enum AppTab: Hashable { case capture, records }
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            captureView
-                .tabItem { Label("Capture", systemImage: "record.circle") }
-                .tag(AppTab.capture)
-
-            recordsView
-                .tabItem { Label("Meetings", systemImage: "text.document") }
-                .tag(AppTab.records)
+        VStack(spacing: 0) {
+            // Avoid AppKit's segmented-tab intrinsic-size feedback loop.
+            HStack(spacing: 12) {
+                tabButton("Capture", icon: "record.circle", tab: .capture)
+                tabButton("Meetings", icon: "text.document", tab: .records)
+                Spacer()
+            }.padding(12)
+            Divider()
+            if selectedTab == .capture { captureView } else { recordsView }
         }
-        .padding(.top, 8)
+    }
+
+    private func tabButton(_ title: String, icon: String, tab: AppTab) -> some View {
+        Button { selectedTab = tab } label: {
+            Label(title, systemImage: icon).padding(.horizontal, 12).padding(.vertical, 8)
+                .background(selectedTab == tab ? Color.accentColor.opacity(0.15) : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        }.buttonStyle(.plain).accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
     }
 
     private var captureView: some View {

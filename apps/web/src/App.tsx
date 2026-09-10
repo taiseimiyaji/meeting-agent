@@ -24,8 +24,9 @@ export function App() {
   const [notice, setNotice] = useState<string>();
   useEffect(() => subscribe((event: ServerEvent) => {
     if (event.type === "error") setNotice(event.payload.message);
-    void client.invalidateQueries({ queryKey: ["capture"] });
-    void client.invalidateQueries({ queryKey: ["meetings"] });
+    if (event.type === "capture") client.setQueryData(["capture"], event.capture);
+    else void client.invalidateQueries({ queryKey: ["capture"] });
+    if (event.type !== "capture") void client.invalidateQueries({ queryKey: ["meetings"] });
     if (event.type === "data_changed") void client.invalidateQueries({ queryKey: ["meeting"] });
     if ("meetingId" in event) void client.invalidateQueries({ queryKey: ["meeting", event.meetingId] });
   }, (value) => { setConnected(value); if (value) void client.invalidateQueries(); }), [client]);
@@ -41,17 +42,17 @@ export function App() {
       <div className="connection"><i className={connected ? "online" : ""} />{connected ? "Local Agent 接続済み" : "再接続しています…"}</div>
     </aside>
     <main>{notice && <div className="notice">{notice}<button onClick={() => setNotice(undefined)}>×</button></div>}
-      {page === "home" && <Home openMeeting={openMeeting} />}
+      {page === "home" && <Home openMeeting={openMeeting} connected={connected} />}
       {page === "meetings" && <MeetingList openMeeting={openMeeting} />}
-      {page === "detail" && meetingId && <MeetingDetail id={meetingId} back={() => setPage("meetings")} />}
+      {page === "detail" && meetingId && <MeetingDetail id={meetingId} connected={connected} back={() => setPage("meetings")} />}
       {page === "settings" && <SettingsPage />}
     </main>
   </div>;
 }
 
-function Home({ openMeeting }: { openMeeting: (id: string) => void }) {
+function Home({ openMeeting, connected }: { openMeeting: (id: string) => void; connected: boolean }) {
   const client = useQueryClient();
-  const capture = useQuery({ queryKey: ["capture"], queryFn: api.captureStatus, refetchInterval: 5000 });
+  const capture = useQuery({ queryKey: ["capture"], queryFn: api.captureStatus, refetchInterval: connected ? false : 5000 });
   const meetings = useQuery({ queryKey: ["meetings"], queryFn: api.meetings });
   const start = useMutation({ mutationFn: () => api.startCapture(), onSuccess: () => void client.invalidateQueries({ queryKey: ["capture"] }) });
   const stop = useMutation({ mutationFn: api.stopCapture, onSuccess: () => void client.invalidateQueries({ queryKey: ["capture"] }) });
@@ -83,32 +84,34 @@ function MeetingList({ openMeeting }: { openMeeting: (id: string) => void }) {
     {query.error ? <ErrorBox error={query.error}/> : <MeetingCards meetings={rows} loading={query.isLoading} openMeeting={openMeeting}/>}</>;
 }
 
-function MeetingDetail({ id, back }: { id: string; back: () => void }) {
+function MeetingDetail({ id, back, connected }: { id: string; back: () => void; connected: boolean }) {
   const client = useQueryClient();
   const [tab, setTab] = useState<"timeline" | "summary">("timeline");
   const [focusScreen, setFocusScreen] = useState<string>();
   const [focusTranscript, setFocusTranscript] = useState<string>();
-  const meeting = useQuery({ queryKey: ["meeting", id], queryFn: () => api.meeting(id), refetchInterval: 2000 });
-  const transcript = useQuery({ queryKey: ["meeting", id, "transcript"], queryFn: () => api.transcript(id), refetchInterval: 2000 });
-  const screens = useQuery({ queryKey: ["meeting", id, "screens"], queryFn: () => api.screens(id), refetchInterval: 2000 });
+  const poll = connected ? false : 5000;
+  const meeting = useQuery({ queryKey: ["meeting", id], queryFn: () => api.meeting(id), refetchInterval: poll });
+  const timeline = useQuery({ queryKey: ["meeting", id, "timeline"], queryFn: () => api.timeline(id), refetchInterval: poll });
+  const transcript = { data: timeline.data?.transcript, isLoading: timeline.isLoading, error: timeline.error };
+  const screens = { data: timeline.data?.screens, isLoading: timeline.isLoading, error: timeline.error };
   const transcriptionProgress = useQuery({
     queryKey: ["meeting", id, "transcription-progress"], queryFn: () => api.transcriptionProgress(id),
-    refetchInterval: 2000,
+    refetchInterval: poll,
   });
   const retryTranscription = useMutation({
     mutationFn: () => api.retryTranscription(id),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ["meeting", id, "transcription-progress"] });
-      void client.invalidateQueries({ queryKey: ["meeting", id, "transcript"] });
+      void client.invalidateQueries({ queryKey: ["meeting", id, "timeline"] });
     },
   });
   const summary = useQuery({
     queryKey: ["meeting", id, "summary"], queryFn: () => api.summary(id),
-    retry: 1, refetchInterval: 2_000,
+    retry: 1, refetchInterval: poll,
   });
   const summaryProgress = useQuery({
     queryKey: ["meeting", id, "summary-progress"], queryFn: () => api.summaryProgress(id), enabled: tab === "summary",
-    refetchInterval: 2_000,
+    refetchInterval: poll,
   });
   const summarize = useMutation({
     mutationFn: () => api.summarize(id),
@@ -117,7 +120,10 @@ function MeetingDetail({ id, back }: { id: string; back: () => void }) {
       void client.invalidateQueries({ queryKey: ["meeting", id, "summary-progress"] });
     },
   });
-  const attributed = (transcript.data ?? []).map((item) => ({ ...item, attributedSpeaker: summary.data?.speakerAttributions?.find((speaker) => speaker.transcriptId === item.id) }));
+  const attributed = useMemo(() => {
+    const names = new Map(summary.data?.speakerAttributions?.map((speaker) => [speaker.transcriptId, speaker]));
+    return (transcript.data ?? []).map((item) => ({ ...item, attributedSpeaker: names.get(item.id) }));
+  }, [transcript.data, summary.data?.speakerAttributions]);
   if (meeting.error) return <ErrorBox error={meeting.error}/>;
   return <><button className="back" onClick={back}>← ミーティング一覧</button><header className="detail-header"><div>{meeting.data && <StatusBadge status={meeting.data.status}/>}<h1>{meeting.data?.title ?? "読み込み中…"}</h1><p>{meeting.data ? date(meeting.data.startedAt) : ""} · {meeting.data ? formatTime(duration(meeting.data.startedAt, meeting.data.endedAt)) : ""}</p></div></header>
     {meeting.data && ["interrupted", "failed", "partially_completed"].includes(meeting.data.status) && <div className="evidence-warning"><strong>一部の処理が完了していません</strong><span>取得済みのTranscriptとScreen Evidenceは引き続き閲覧できます。</span></div>}
@@ -133,14 +139,33 @@ function TranscriptionRecovery({ value, transcriptCount, retrying, error, onRetr
   return <div className={`transcription-recovery ${value.state}`}><div><strong>{active ? "保存した音声を区間ごとに文字起こししています" : hasAudio ? `復旧用音声をローカル保存済み（${size}）` : "復旧用音声はありません"}</strong><span>{value.state === "retrying" ? `一時エラーのため自動再試行待ち（${value.retryCount}回）` : value.state === "failed" ? "自動処理に失敗しました。音声は残っているため再実行できます。" : transcriptCount === 0 && hasAudio ? "文字起こしがない場合は保存音声から再実行できます。" : "システム音声とマイク音声を会議データと一緒に保持しています。"}</span>{value.totalChunks !== undefined && <small>完了 {value.completedChunks}/{value.totalChunks} 区間 · 失敗 {value.failedChunks} · {value.provider ?? "処理待ち"}{value.isCapturing ? " · 録音継続中（約20秒ごとに処理）" : ""}</small>}{(value.error || error) && <small>{value.error ?? error?.message}</small>}</div>{hasAudio && !active && !value.isCapturing && <button className="primary" disabled={retrying} onClick={onRetry}>{retrying ? "依頼中…" : transcriptCount ? "文字起こしを再実行" : "文字起こしを復旧"}</button>}</div>;
 }
 
+function usePage<T extends { id: string }>(items: T[], focus?: string) {
+  const [page, setPage] = useState(0);
+  const pages = Math.max(1, Math.ceil(items.length / 50));
+  const current = Math.min(page, pages - 1);
+  useEffect(() => {
+    if (!focus) return;
+    const index = items.findIndex((item) => item.id === focus);
+    if (index >= 0) setPage(Math.floor(index / 50));
+  }, [focus, items]);
+  useEffect(() => {
+    if (focus) document.getElementById(`screen-${focus}`)?.scrollIntoView?.({ block: "nearest" });
+    if (focus) document.getElementById(`transcript-${focus}`)?.scrollIntoView?.({ block: "nearest" });
+  }, [focus, current]);
+  const controls = pages > 1 ? <div className="pagination"><button disabled={current === 0} onClick={() => setPage(current - 1)}>前の50件</button><span>{current + 1} / {pages}</span><button disabled={current + 1 === pages} onClick={() => setPage(current + 1)}>次の50件</button></div> : null;
+  return { rows: items.slice(current * 50, (current + 1) * 50), controls };
+}
+
 function TranscriptPanel({ items, loading, focus, onScreen }: { items: TranscriptEvent[]; loading: boolean; focus?: string; onScreen: (id: string) => void }) {
   const [showEchoes, setShowEchoes] = useState(false);
   const echoCount = items.filter((item) => item.possibleEchoOf).length;
-  const visible = showEchoes ? items : items.filter((item) => !item.possibleEchoOf);
-  return <section className="panel"><div className="panel-title"><h2>Transcript</h2><span>{visible.length} events</span></div>{echoCount > 0 && <div className="echo-notice"><p>スピーカー音の回り込みと思われる重複 {echoCount}件を{showEchoes ? "表示中" : "まとめています"}。元の記録は保持しています。</p><label><input type="checkbox" checked={showEchoes} onChange={(event) => setShowEchoes(event.target.checked)}/>重複候補も表示</label></div>}{loading ? <Empty>読み込み中…</Empty> : !visible.length ? <Empty>Transcriptはまだありません。</Empty> : <div className="transcript-list">{visible.map((item) => <article id={`transcript-${item.id}`} className={focus === item.id ? "focused" : ""} key={`${item.id}-${item.revision}`}><time>{formatTime(item.startedAtMs)}</time><div><div className="speaker"><b>{item.possibleEchoOf ? "マイク（回り込み候補）" : item.attributedSpeaker ? item.attributedSpeaker.name : item.speaker === "self" ? "マイク音声（話者未確認）" : item.speaker === "remote" ? "話者不明（システム音声）" : "話者不明"}</b>{item.attributedSpeaker && <span className="partial" title={item.attributedSpeaker.reason}>画面とAI照合</span>}{!item.isFinal && <span className="partial">文字起こし中…</span>}</div><p>{item.text}</p>{item.attributedSpeaker && <div className="refs">{item.attributedSpeaker.evidenceIds.filter((screenId) => screenId !== item.id).map((screenId) => <button key={screenId} onClick={() => onScreen(screenId)}>発話者の根拠画面</button>)}</div>}{item.screenRefs.length > 0 && <div className="refs">{item.screenRefs.map((ref) => <button key={`${ref.screenId}-${ref.relation}`} onClick={() => onScreen(ref.screenId)}>▧ {ref.screenId} <small>{Math.round((ref.confidence ?? 0) * 100)}%</small></button>)}</div>}</div></article>)}</div>}</section>;
+  const visible = useMemo(() => showEchoes ? items : items.filter((item) => !item.possibleEchoOf), [showEchoes, items]);
+  const page = usePage(visible, focus);
+  return <section className="panel"><div className="panel-title"><h2>Transcript</h2><span>{visible.length} events</span></div>{page.controls}{echoCount > 0 && <div className="echo-notice"><p>スピーカー音の回り込みと思われる重複 {echoCount}件を{showEchoes ? "表示中" : "まとめています"}。元の記録は保持しています。</p><label><input type="checkbox" checked={showEchoes} onChange={(event) => setShowEchoes(event.target.checked)}/>重複候補も表示</label></div>}{loading ? <Empty>読み込み中…</Empty> : !visible.length ? <Empty>Transcriptはまだありません。</Empty> : <div className="transcript-list">{page.rows.map((item) => <article id={`transcript-${item.id}`} className={focus === item.id ? "focused" : ""} key={`${item.id}-${item.revision}`}><time>{formatTime(item.startedAtMs)}</time><div><div className="speaker"><b>{item.possibleEchoOf ? "マイク（回り込み候補）" : item.attributedSpeaker ? item.attributedSpeaker.name : item.speaker === "self" ? "マイク音声（話者未確認）" : item.speaker === "remote" ? "話者不明（システム音声）" : "話者不明"}</b>{item.attributedSpeaker && <span className="partial" title={item.attributedSpeaker.reason}>画面とAI照合</span>}{!item.isFinal && <span className="partial">文字起こし中…</span>}</div><p>{item.text}</p>{item.attributedSpeaker && <div className="refs">{item.attributedSpeaker.evidenceIds.filter((screenId) => screenId !== item.id).map((screenId) => <button key={screenId} onClick={() => onScreen(screenId)}>発話者の根拠画面</button>)}</div>}{item.screenRefs.length > 0 && <div className="refs">{item.screenRefs.map((ref) => <button key={`${ref.screenId}-${ref.relation}`} onClick={() => onScreen(ref.screenId)}>▧ {ref.screenId} <small>{Math.round((ref.confidence ?? 0) * 100)}%</small></button>)}</div>}</div></article>)}</div>}</section>;
 }
 function ScreensPanel({ items, loading, focus, onTranscript }: { items: ScreenEvent[]; loading: boolean; focus?: string; onTranscript: (id: string) => void }) {
-  return <section className="panel screens"><div className="panel-title"><h2>Screen Timeline</h2><span>{items.length} frames</span></div>{loading ? <Empty>読み込み中…</Empty> : !items.length ? <Empty>画面Evidenceはまだありません。</Empty> : items.map((item) => <article id={`screen-${item.id}`} className={focus === item.id ? "screen-item focused" : "screen-item"} key={item.id}><AuthenticatedImage path={item.imageUrl} alt={item.description ?? item.id}/><div><time>{formatTime(item.startedAtMs)}</time><h3>{item.description ?? "画面を解析中"}</h3>{item.analysisStatus === "running" && <span className="processing">◌ 解析中</span>}{item.analysisStatus === "failed" && <span className="failed-text">解析失敗 · 画像は保存済み</span>}<p>{item.ocr}</p><button className="text-button" onClick={() => onTranscript(item.id)}>関連する発話を見る →</button></div></article>)}</section>;
+  const page = usePage(items, focus);
+  return <section className="panel screens"><div className="panel-title"><h2>Screen Timeline</h2><span>{items.length} frames</span></div>{page.controls}{loading ? <Empty>読み込み中…</Empty> : !items.length ? <Empty>画面Evidenceはまだありません。</Empty> : page.rows.map((item) => <article id={`screen-${item.id}`} className={focus === item.id ? "screen-item focused" : "screen-item"} key={item.id}><AuthenticatedImage path={item.imageUrl} alt={item.description ?? item.id}/><div><time>{formatTime(item.startedAtMs)}</time><h3>{item.description ?? "画面を解析中"}</h3>{item.analysisStatus === "running" && <span className="processing">◌ 解析中</span>}{item.analysisStatus === "failed" && <span className="failed-text">解析失敗 · 画像は保存済み</span>}<p>{item.ocr}</p><button className="text-button" onClick={() => onTranscript(item.id)}>関連する発話を見る →</button></div></article>)}</section>;
 }
 
 function SummaryPanel({ value, progress, loading, error, generating, onGenerate, transcripts, screens, evidenceLoading, evidenceError }: { transcripts: TranscriptEvent[]; screens: ScreenEvent[]; evidenceLoading: boolean; evidenceError: Error | null; value: Awaited<ReturnType<typeof api.summary>> | undefined; progress: Awaited<ReturnType<typeof api.summaryProgress>> | undefined; loading: boolean; error: Error | null; generating: boolean; onGenerate: () => void }) {

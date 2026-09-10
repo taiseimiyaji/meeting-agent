@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "./App";
-const state = vi.hoisted(() => ({ summaryText: "古い要約", discussions: [] as unknown[], speakers: [] as unknown[], transcript: [] as unknown[], callback: undefined as ((event: unknown) => void) | undefined, onConnect: undefined as ((connected: boolean) => void) | undefined }));
+const state = vi.hoisted(() => ({ timelineCalls: 0, summaryText: "古い要約", discussions: [] as unknown[], speakers: [] as unknown[], transcript: [] as unknown[], callback: undefined as ((event: unknown) => void) | undefined, onConnect: undefined as ((connected: boolean) => void) | undefined }));
 vi.mock("./api", () => ({
   isAuthenticationError: () => false,
   subscribe: (callback: (event: unknown) => void, connected: (value: boolean) => void) => { state.callback = callback; state.onConnect = connected; connected(true); return () => {}; },
@@ -13,6 +13,7 @@ vi.mock("./api", () => ({
     captureStatus: async () => ({ status: "capturing", meetingId: "m1", videoFrames: 1 }),
     meetings: async () => [{ id: "m1", title: "検証会議", status: "capturing", startedAt: "2026-09-07T00:00:00Z" }],
     meeting: async () => ({ id: "m1", title: "検証会議", status: "capturing", startedAt: "2026-09-07T00:00:00Z" }),
+    timeline: async () => { state.timelineCalls++; return { transcript: state.transcript, screens: [] }; },
     transcript: async () => state.transcript,
     screens: async () => [],
     summary: async () => ({ summary: state.summaryText, discussions: state.discussions, speakerAttributions: state.speakers, decisions: [], actionItems: [], openQuestions: [], topics: [] }),
@@ -23,7 +24,7 @@ vi.mock("./api", () => ({
     stopCapture: async () => { throw new Error("停止処理に失敗しました"); },
   },
 }));
-beforeEach(() => { state.discussions = []; state.speakers = []; state.transcript = []; state.summaryText = "古い要約"; });
+beforeEach(() => { state.timelineCalls = 0; state.discussions = []; state.speakers = []; state.transcript = []; state.summaryText = "古い要約"; });
 afterEach(() => cleanup());
 function mount() { render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><App/></QueryClientProvider>); }
 function addTranscript() { state.transcript = [{ id: "t1", revision: 1, startedAtMs: 0, endedAtMs: 1000, speaker: "self", text: "後から届いた文字起こし", isFinal: true, source: "microphone", screenRefs: [] }]; }
@@ -87,4 +88,23 @@ it("shows the stored generator and topic discussion in meeting minutes", async (
   expect(await screen.findByText("生成元: Codex（ChatGPT）")).toBeTruthy();
   expect(screen.getByText("公開日の変更")).toBeTruthy();
   expect(screen.getByText("負荷試験が未完了のため、公開を延期した。")).toBeTruthy();
+});
+
+it("bounds transcript DOM rows while allowing older and later pages", async () => {
+  state.transcript = Array.from({ length: 120 }, (_, index) => ({ id: `t${index}`, revision: 1, startedAtMs: index * 1000, speaker: "remote", text: `発話番号${index}`, isFinal: true, source: "system_audio", screenRefs: [] }));
+  mount(); fireEvent.click(await screen.findByText("ライブ表示"));
+  await screen.findByText("発話番号0");
+  expect(screen.queryByText("発話番号50")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "次の50件" }));
+  expect(await screen.findByText("発話番号50")).toBeTruthy();
+  expect(screen.queryByText("発話番号0")).toBeNull();
+});
+
+it("shares one timeline download and does not refetch it for capture metrics", async () => {
+  addTranscript();
+  mount(); fireEvent.click(await screen.findByText("ライブ表示"));
+  await screen.findByText("後から届いた文字起こし");
+  expect(state.timelineCalls).toBe(1);
+  await act(async () => state.callback?.({ type: "capture", capture: { status: "capturing", meetingId: "m1", videoFrames: 42 } }));
+  expect(state.timelineCalls).toBe(1);
 });

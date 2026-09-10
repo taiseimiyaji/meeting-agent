@@ -31,9 +31,13 @@ final class AgentViewModel: ObservableObject {
             while !Task.isCancelled {
                 guard let self else { break }
                 let snapshot = await self.capture.snapshot()
-                self.isCapturing = snapshot.status == .capturing || snapshot.status == .stopping
-                self.errorMessage = snapshot.error
-                self.metrics = await self.capture.metricsSnapshot()
+                let active = snapshot.status == .capturing || snapshot.status == .stopping
+                if self.isCapturing != active { self.isCapturing = active }
+                if self.errorMessage != snapshot.error { self.errorMessage = snapshot.error }
+                if active {
+                    let metrics = await self.capture.metricsSnapshot()
+                    if self.metrics != metrics { self.metrics = metrics }
+                }
                 do { try await Task.sleep(for: .seconds(1)) } catch { break }
             }
         }

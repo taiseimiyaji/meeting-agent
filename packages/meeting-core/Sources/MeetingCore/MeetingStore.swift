@@ -36,6 +36,7 @@ public struct AnalysisJob: Codable, Equatable, Sendable, Identifiable {
 /// WAL lets capture writes coexist with readers in other processes.
 public final class MeetingStore: @unchecked Sendable {
     private var db: OpaquePointer?
+    private var cachedTimeline: (version: Int64, value: Timeline)?
     private let lock = NSRecursiveLock()
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
@@ -76,6 +77,7 @@ public final class MeetingStore: @unchecked Sendable {
                     try execute("PRAGMA user_version = 2")
                 }
             }
+            try execute("CREATE INDEX IF NOT EXISTS screen_pending_queue ON screen_events(meeting_id,analysis_status,started_at_ms,id)")
         }
     }
 
@@ -194,8 +196,17 @@ public final class MeetingStore: @unchecked Sendable {
     }
 
     public func timeline(meetingId: String) throws -> Timeline? {
-        guard let meeting = try meeting(id: meetingId) else { return nil }
-        return Timeline(meeting: meeting, transcripts: TranscriptEchoDetector.annotate(try transcripts(meetingId: meetingId)), screens: try screens(meetingId: meetingId))
+        try locked {
+            let version = changeVersion
+            if let cachedTimeline, cachedTimeline.version == version, cachedTimeline.value.meeting.id == meetingId {
+                return cachedTimeline.value
+            }
+            guard let meeting = try meeting(id: meetingId) else { cachedTimeline = nil; return nil }
+            let value = Timeline(meeting: meeting, transcripts: TranscriptEchoDetector.annotate(try transcripts(meetingId: meetingId)), screens: try screens(meetingId: meetingId))
+            // Keep only the last viewed meeting; never accumulate history caches.
+            cachedTimeline = (version, value)
+            return value
+        }
     }
 
     public func enqueue(_ job: AnalysisJob) throws {
@@ -330,6 +341,24 @@ public final class MeetingStore: @unchecked Sendable {
         return values
     }
 
+    /// Maintenance excludes settled history and is not truncated by UI pagination.
+    public func retentionCandidates(before: Date) throws -> [Meeting] {
+        var ids: [String] = []
+        try query("SELECT id FROM meetings WHERE ended_at < ? AND status IN ('completed','partially_completed','interrupted','failed')", [.text(Self.date(before))]) { ids.append($0.text(0)!) }
+        return try ids.compactMap { try meeting(id: $0) }
+    }
+
+    public func maintenanceMeetings() throws -> [Meeting] {
+        var ids: [String] = []
+        try query("""
+            SELECT m.id FROM meetings m WHERE m.status IN ('capturing','finalizing') OR
+            (NOT EXISTS (SELECT 1 FROM summaries s WHERE s.meeting_id=m.id AND s.is_active=1)
+             AND NOT EXISTS (SELECT 1 FROM analysis_jobs j WHERE j.meeting_id=m.id AND j.kind='summarize' AND j.status='failed'))
+            ORDER BY m.started_at,m.id
+            """) { ids.append($0.text(0)!) }
+        return try ids.compactMap { try meeting(id: $0) }
+    }
+
     public func activeSummaryProvider(meetingId: String) throws -> String? {
         var provider: String?
         try query("SELECT provider FROM summaries WHERE meeting_id=? AND is_active=1 ORDER BY created_at DESC LIMIT 1", [.text(meetingId)]) { provider = $0.text(0) }
@@ -384,6 +413,13 @@ public final class MeetingStore: @unchecked Sendable {
         try query("SELECT id,meeting_id,revision,started_at_ms,ended_at_ms,speaker,source,text,is_final FROM transcript_events WHERE meeting_id=? ORDER BY started_at_ms,id", [.text(meetingId)]) { row in values.append(try decodeTranscript(row)) }
         for index in values.indices { values[index].screenRefs = try references(transcriptId: values[index].id) }
         return values
+    }
+
+    /// Disk-backed OCR queue: only one screen is materialized at a time.
+    public func nextPendingScreen(meetingId: String) throws -> ScreenEvent? {
+        var id: String?
+        try query("SELECT id FROM screen_events WHERE meeting_id=? AND analysis_status='pending' ORDER BY started_at_ms,id LIMIT 1", [.text(meetingId)]) { id = $0.text(0) }
+        return try id.flatMap { try screen(id: $0) }
     }
 
     public func screens(meetingId: String) throws -> [ScreenEvent] {
