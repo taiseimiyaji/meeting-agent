@@ -341,19 +341,20 @@ public final class MeetingStore: @unchecked Sendable {
         return values
     }
 
-    /// Maintenance excludes settled history and is not truncated by UI pagination.
+    /// Retention is not truncated by UI pagination.
     public func retentionCandidates(before: Date) throws -> [Meeting] {
         var ids: [String] = []
         try query("SELECT id FROM meetings WHERE ended_at < ? AND status IN ('completed','partially_completed','interrupted','failed')", [.text(Self.date(before))]) { ids.append($0.text(0)!) }
         return try ids.compactMap { try meeting(id: $0) }
     }
 
+    /// Exclude settled history and consult the latest job, not historical failures.
     public func maintenanceMeetings() throws -> [Meeting] {
         var ids: [String] = []
         try query("""
             SELECT m.id FROM meetings m WHERE m.status IN ('capturing','finalizing') OR
             (NOT EXISTS (SELECT 1 FROM summaries s WHERE s.meeting_id=m.id AND s.is_active=1)
-             AND NOT EXISTS (SELECT 1 FROM analysis_jobs j WHERE j.meeting_id=m.id AND j.kind='summarize' AND j.status='failed'))
+             AND COALESCE((SELECT j.status FROM analysis_jobs j WHERE j.meeting_id=m.id AND j.kind='summarize' ORDER BY j.updated_at DESC,j.created_at DESC,j.rowid DESC LIMIT 1),'') != 'failed')
             ORDER BY m.started_at,m.id
             """) { ids.append($0.text(0)!) }
         return try ids.compactMap { try meeting(id: $0) }

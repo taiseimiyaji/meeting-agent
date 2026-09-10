@@ -13,6 +13,10 @@ func verifyResourceBounds() throws {
     }
     try check(try store.maintenanceMeetings().map(\.id) == ["history-0"], "maintenance excludes settled history and finds work beyond 100 UI rows")
     let meetingID = "history-0"
+    try store.enqueue(.init(id: "failed-summary", meetingId: meetingID, kind: "summarize", status: .failed))
+    try check(try store.maintenanceMeetings().isEmpty, "terminal failure is not retried by maintenance")
+    try store.enqueue(.init(id: "retried-summary", meetingId: meetingID, kind: "summarize", status: .completed))
+    try check(try store.maintenanceMeetings().map(\.id) == [meetingID], "historical failures do not hide work after a successful retry")
     for index in 0..<200 {
         try store.save(ScreenEvent(id: "screen-\(index)", meetingId: meetingID, timeRange: .init(startedAtMs: Int64(index)), imagePath: "/fixture.jpg", analysisStatus: .pending))
     }
