@@ -1,4 +1,5 @@
 #if canImport(CoreVideo) && canImport(CoreImage)
+import CryptoKit
 import CoreImage
 import CoreVideo
 import Foundation
@@ -63,7 +64,14 @@ public actor KeyFrameWriter {
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
         let quality = CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String)
         try context.writeJPEGRepresentation(of: image, to: url, colorSpace: colorSpace, options: [quality: 0.82])
-        return url
+        // Keep distinct screen events, but share byte-identical JPEGs within a meeting.
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let shared = directory.appendingPathComponent(hash).appendingPathExtension("jpg")
+        if shared == url { return url }
+        if FileManager.default.fileExists(atPath: shared.path) { try FileManager.default.removeItem(at: url) }
+        else { try FileManager.default.moveItem(at: url, to: shared) }
+        return shared
     }
 }
 #endif

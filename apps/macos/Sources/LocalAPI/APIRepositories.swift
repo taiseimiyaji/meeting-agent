@@ -16,9 +16,11 @@ public protocol MeetingAPIRepository: Sendable {
     func transcriptionProgress(meetingId: String) throws -> TranscriptionProgressResponse
     func enqueue(meetingId: String, kind: String) throws
     func screenImage(id: String) throws -> APIImage?
+    func screenImage(id: String, thumbnail: Bool) throws -> APIImage?
 }
 
 public extension MeetingAPIRepository {
+    func screenImage(id: String, thumbnail: Bool) throws -> APIImage? { try screenImage(id: id) }
     var changeVersion: Int64 { 0 }
     func prepareWhisperModel() async throws { throw CocoaError(.featureUnsupported) }
     func settings() throws -> AgentSettings { .init() }
@@ -32,6 +34,7 @@ public struct APIImage: Sendable {
 }
 
 public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Sendable {
+    private let thumbnails = ThumbnailCache()
     private let store: MeetingStore
     private let evidenceRoot: URL
 
@@ -77,27 +80,21 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
         let system = directory.appendingPathComponent("system.caf")
         let microphone = directory.appendingPathComponent("microphone.caf")
         func size(_ url: URL) -> Int64 {
-            Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            LosslessAudio.storedSize(url)
         }
         var systemBytes = size(system), microphoneBytes = size(microphone)
         var total = 0, completed = 0, failed = 0
         var provider: String? = nil
         for folder in [directory] + ["legacy-systemAudio", "legacy-microphone"].map({ directory.appendingPathComponent($0) }) {
-            let chunks = try AudioArchiveWriter.chunks(in: folder)
+            try AudioInventory.ensure(folder: folder, meetingId: meetingId, store: store)
             failed += try AudioArchiveWriter.corruptUnits(in: folder).count
-            for chunk in chunks {
-                total += 1
-                let bytes = size(folder.appendingPathComponent(chunk.fileName))
-                if chunk.kind == "microphone" { microphoneBytes += bytes } else { systemBytes += bytes }
-                let receipt = folder.appendingPathComponent("\(chunk.id).done")
-                if FileManager.default.fileExists(atPath: receipt.path) {
-                    completed += 1
-                    provider = (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: receipt)))?["provider"] ?? provider
-                }
-                if FileManager.default.fileExists(atPath: folder.appendingPathComponent("\(chunk.id).error").path) { failed += 1 }
+            for stats in try store.audioTrackStatistics(folder: folder.path) {
+                total += stats.total; completed += stats.completed; failed += stats.failed
+                if stats.kind == "microphone" { microphoneBytes += stats.bytes } else { systemBytes += stats.bytes }
+                provider = stats.provider ?? provider
             }
         }
-        let hasTranscript = !(try store.transcripts(meetingId: meetingId)).isEmpty
+        let hasTranscript = try store.hasTranscripts(meetingId: meetingId)
         let job = try store.latestAnalysisJob(meetingId: meetingId, kind: "transcribe")
         let live = try store.meeting(id: meetingId)?.status == .capturing
         let state: SummaryProgressState
@@ -125,12 +122,20 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
             let rerunAll = try store.latestAnalysisJob(meetingId: meetingId, kind: kind)?.status == .completed
             let directory = evidenceRoot.appendingPathComponent(meetingId).appendingPathComponent("Audio")
             for folder in [directory] + ["legacy-systemAudio", "legacy-microphone"].map({ directory.appendingPathComponent($0) }) {
+                store.invalidateAudioIndex(folder: folder.path)
                 for chunk in try AudioArchiveWriter.chunks(in: folder, recoverOpen: true) {
                     for ext in ["error", "attempt"] + (rerunAll ? ["done"] : []) { try? FileManager.default.removeItem(at: folder.appendingPathComponent("\(chunk.id).\(ext)")) }
                 }
             }
         }
         _ = try store.enqueueIfNeeded(AnalysisJob(meetingId: meetingId, kind: kind, priority: priority))
+    }
+
+    public func screenImage(id: String, thumbnail: Bool) throws -> APIImage? {
+        guard let screen = try store.screen(id: id) else { return nil }
+        if thumbnail, let cached = thumbnails.cached(key: screen.imagePath) { return cached }
+        guard let original = try screenImage(id: id) else { return nil }
+        return try thumbnail ? thumbnails.preview(original, key: screen.imagePath) : original
     }
 
     public func screenImage(id: String) throws -> APIImage? {
@@ -225,6 +230,8 @@ public actor LocalCaptureController: CaptureAPIControlling {
             let keyFrameDirectory = evidenceRoot
                 .appendingPathComponent(id, isDirectory: true)
                 .appendingPathComponent("KeyFrames", isDirectory: true)
+            try FileManager.default.createDirectory(at: keyFrameDirectory, withIntermediateDirectories: true)
+            try StorageCapacity.require(at: keyFrameDirectory)
             let pipeline = try pipelineBuilder(keyFrameDirectory)
             self.pipeline = pipeline
             try await pipeline.start(
