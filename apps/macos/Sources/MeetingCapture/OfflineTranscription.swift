@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 @preconcurrency import Speech
 import Foundation
+import MeetingCore
 
 public struct OfflineTranscript: Sendable, Equatable {
     public let text: String
@@ -29,6 +30,7 @@ public final class AppleSpeechFileTranscriber: FileTranscriber, @unchecked Senda
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("meeting-agent-stt-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporary) }
+        try TemporaryWorkspace.mark(temporary)
         var results: [OfflineTranscript] = []
         var offsetFrames: AVAudioFramePosition = 0
         while offsetFrames < audio.length {

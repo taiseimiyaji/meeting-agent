@@ -7,16 +7,23 @@ public actor WhisperFileTranscriber: FileTranscriber {
     public nonisolated let provider = "whisperkit"
     private let directory: URL
     private var engine: WhisperKit?
+    private var releaseTask: Task<Void, Never>?
     public init(directory: URL) { self.directory = directory }
 
     public func prepareModel() async throws {
         let folder = try await WhisperKit.download(variant: "openai_whisper-small", downloadBase: directory)
-        engine = try await WhisperKit(modelFolder: folder.path, tokenizerFolder: directory,
-                                      verbose: false, prewarm: false, load: true, download: false)
+        _ = try await ModelUtilities.loadTokenizer(for: .small, tokenizerFolder: directory, additionalSearchPaths: [folder])
         try Data(folder.path.utf8).write(to: directory.appendingPathComponent("installed-model.txt"), options: .atomic)
     }
 
     public func transcribe(file: URL) async throws -> OfflineTranscript {
+        releaseTask?.cancel()
+        defer {
+            releaseTask = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(120)) } catch { return }
+                await self?.releaseEngine()
+            }
+        }
         if engine == nil {
             guard let path = try? String(contentsOf: directory.appendingPathComponent("installed-model.txt"), encoding: .utf8),
                   path.hasPrefix(directory.path + "/"), FileManager.default.fileExists(atPath: path) else {
@@ -35,4 +42,6 @@ public actor WhisperFileTranscriber: FileTranscriber {
                      startedAtMs: Int64((segments.first?.start ?? 0) * 1000),
                      endedAtMs: Int64((segments.last?.end ?? 0) * 1000))
     }
+    private func releaseEngine() { engine = nil; releaseTask = nil }
+
 }

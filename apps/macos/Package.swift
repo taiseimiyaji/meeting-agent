@@ -19,8 +19,8 @@ let package = Package(
     ],
     targets: [
         .target(name: "CodexSupport", dependencies: [.product(name: "MeetingCore", package: "meeting-core")]),
-        .executableTarget(name: "MeetingCodexHelper", dependencies: ["CodexSupport"]),
-        .target(name: "MeetingCapture", dependencies: [.product(name: "WhisperKit", package: "WhisperKit")]),
+        .executableTarget(name: "MeetingCodexHelper", dependencies: ["CodexSupport", .product(name: "MeetingCore", package: "meeting-core")]),
+        .target(name: "MeetingCapture", dependencies: [.product(name: "WhisperKit", package: "WhisperKit"), .product(name: "MeetingCore", package: "meeting-core")]),
         .target(
             name: "MeetingPipeline",
             dependencies: [

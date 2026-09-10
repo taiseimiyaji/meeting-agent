@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
 
-export function AuthenticatedImage({ path, alt }: { path: string; alt: string }) {
+export function AuthenticatedImage({ path, alt, original = false }: { path: string; alt: string; original?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(160);
   const [visible, setVisible] = useState(typeof IntersectionObserver === "undefined");
@@ -12,7 +12,7 @@ export function AuthenticatedImage({ path, alt }: { path: string; alt: string })
     observer.observe(ref.current);
     return () => observer.disconnect();
   }, []);
-  return <div ref={ref} style={{ minHeight: height }}>{visible ? <VisibleImage path={path} alt={alt}/> : <div className="screen-image-state">画面画像</div>}</div>;
+  return <div ref={ref} style={{ minHeight: height }}>{visible ? <VisibleImage path={original || !path.startsWith("/api/") ? path : `${path}${path.includes("?") ? "&" : "?"}thumbnail=1`} alt={alt}/> : <div className="screen-image-state">画面画像</div>}</div>;
 }
 
 function VisibleImage({ path, alt }: { path: string; alt: string }) {
