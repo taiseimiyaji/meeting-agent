@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, isAuthenticationError, subscribe } from "./api";
 import type { MeetingStatus, ScreenEvent, ServerEvent, Settings, TranscriptEvent, TranscriptionProgress, SummaryItem } from "./types";
 
+import { tabCapture } from "./TabCapture";
 import { AuthenticatedImage } from "./AuthenticatedImage";
 import { SummaryEvidence } from "./SummaryEvidence";
 
@@ -55,14 +56,18 @@ function Home({ openMeeting, connected }: { openMeeting: (id: string) => void; c
   const capture = useQuery({ queryKey: ["capture"], queryFn: api.captureStatus, refetchInterval: connected ? false : 5000 });
   const meetings = useQuery({ queryKey: ["meetings"], queryFn: api.meetings });
   const start = useMutation({ mutationFn: () => api.startCapture(), onSuccess: () => void client.invalidateQueries({ queryKey: ["capture"] }) });
-  const stop = useMutation({ mutationFn: api.stopCapture, onSuccess: () => void client.invalidateQueries({ queryKey: ["capture"] }) });
+  const [tabError, setTabError] = useState<Error>();
+  const tabStart = useMutation({ mutationFn: () => tabCapture.start(setTabError), onSuccess: () => void client.invalidateQueries({ queryKey: ["capture"] }) });
+  const stop = useMutation({ mutationFn: async () => { if (tabCapture.active) await tabCapture.stop(); else await api.stopCapture(); }, onSuccess: () => void client.invalidateQueries({ queryKey: ["capture"] }) });
   const isLive = capture.data?.status === "capturing";
   const activeMeeting = meetings.data?.find((m) => m.id === capture.data?.meetingId);
   return <><header><div><p className="eyebrow">TODAY</p><h1>会議の記憶を、手元に。</h1><p>発話と画面をひとつのタイムラインに記録します。</p></div></header>
     {capture.error ? <ErrorBox error={capture.error} /> : <section className={`capture-card ${isLive ? "live" : ""}`}>
       <div><span className="live-dot" /><div><p>{isLive ? "CAPTURING NOW" : "READY TO CAPTURE"}</p><h2>{isLive ? activeMeeting?.title ?? "新しいミーティング" : "Captureを開始できます"}</h2><span>{isLive ? `${activeMeeting ? formatTime(duration(activeMeeting.startedAt)) : "--:--"} · ${capture.data?.videoFrames ?? 0} frames · 音声と画面を保存中` : "データはこのMac内に保存されます"}</span></div></div>
-      <div className="capture-actions">{isLive && capture.data?.meetingId && <button className="ghost" onClick={() => openMeeting(capture.data!.meetingId!)}>ライブ表示</button>}<button className={isLive ? "stop" : "primary"} disabled={start.isPending || stop.isPending} onClick={() => isLive ? stop.mutate() : start.mutate()}>{isLive ? "■  停止" : "●  Capture開始"}</button></div>
+      <div className="capture-actions">{!isLive && <button className="primary" disabled={tabStart.isPending || start.isPending} onClick={() => { setTabError(undefined); tabStart.mutate(); }}>{tabStart.isPending ? "タブを準備中…" : "Chromeの会議タブを選んで開始"}</button>}{isLive && capture.data?.meetingId && <button className="ghost" onClick={() => openMeeting(capture.data!.meetingId!)}>ライブ表示</button>}<button className={isLive ? "stop" : "ghost"} disabled={start.isPending || stop.isPending || tabStart.isPending} onClick={() => isLive ? stop.mutate() : start.mutate()}>{isLive ? "■  停止" : "ウインドウ収録"}</button></div>
     </section>}
+    {!isLive && <p>Chromeでこの画面を開き、「Chrome タブ」と「タブの音声も共有する」を選択してください。収録中はこのMeeting Agentタブを開いたままにしてください。</p>}
+    {(tabStart.error || tabError) && <ErrorBox error={tabStart.error ?? tabError!}/>}
     {(start.error || stop.error) && <ErrorBox error={(start.error ?? stop.error)!}/>}
     {capture.data?.error && <div className="error-box">{capture.data.error}</div>}
     <div className="section-title"><div><h2>最近のミーティング</h2><p>ローカルに保存されたEvidence</p></div><button className="text-button" onClick={() => document.querySelector("nav button:nth-child(2)") instanceof HTMLElement && (document.querySelector("nav button:nth-child(2)") as HTMLElement).click()}>すべて表示 →</button></div>

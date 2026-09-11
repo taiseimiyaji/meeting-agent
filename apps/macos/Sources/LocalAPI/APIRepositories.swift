@@ -172,6 +172,8 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
 
 public protocol CaptureAPIControlling: Sendable {
     func snapshot() async -> APICaptureSnapshot
+    func stopBrowser(meetingID: String, error: String?) async throws
+    func browserPacket(meetingID: String, kind: String, sequence: Int, timestamp: Int64, rate: Double, channels: Int, data: Data) async throws
     func start(targetID: String?) async throws
     func stop() async throws
 }
@@ -190,8 +192,14 @@ public extension MeetingPipelineControlling {
 
 extension MeetingPipeline: MeetingPipelineControlling {}
 
+public extension CaptureAPIControlling {
+    func stopBrowser(meetingID: String, error: String?) async throws { throw CaptureError.notRunning }
+    func browserPacket(meetingID: String, kind: String, sequence: Int, timestamp: Int64, rate: Double, channels: Int, data: Data) async throws { throw CaptureError.notRunning }
+}
+
 public actor LocalCaptureController: CaptureAPIControlling {
     private let adapter: any MeetingCaptureAdapter
+    private var browser: BrowserCaptureAdapter?
     private let store: MeetingStore
     private let evidenceRoot: URL
     private let pipelineBuilder: @Sendable (URL) throws -> any MeetingPipelineControlling
@@ -219,7 +227,7 @@ public actor LocalCaptureController: CaptureAPIControlling {
     }
 
     public func availableTargets() async throws -> [CaptureTarget] { try await adapter.availableTargets() }
-    public func metricsSnapshot() async -> CaptureMetricsSnapshot { await adapter.metricsSnapshot() }
+    public func metricsSnapshot() async -> CaptureMetricsSnapshot { if let browser { return await browser.metricsSnapshot() }; return await adapter.metricsSnapshot() }
 
     public func start(targetID: String?) async throws {
         guard status == .idle || status == .failed else { throw CaptureError.alreadyRunning }
@@ -232,7 +240,10 @@ public actor LocalCaptureController: CaptureAPIControlling {
                 .appendingPathComponent("KeyFrames", isDirectory: true)
             try FileManager.default.createDirectory(at: keyFrameDirectory, withIntermediateDirectories: true)
             try StorageCapacity.require(at: keyFrameDirectory)
-            let pipeline = try pipelineBuilder(keyFrameDirectory)
+            browser = targetID == "browser-tab" ? BrowserCaptureAdapter() : nil
+            let pipeline: any MeetingPipelineControlling
+            if let browser { pipeline = try MeetingPipeline(capture: browser, store: store, configuration: .init(keyFrameDirectory: keyFrameDirectory)) }
+            else { pipeline = try pipelineBuilder(keyFrameDirectory) }
             self.pipeline = pipeline
             try await pipeline.start(
                 meeting: meeting,
@@ -246,6 +257,17 @@ public actor LocalCaptureController: CaptureAPIControlling {
             status = .failed; lastError = error.localizedDescription
             throw error
         }
+    }
+
+    public func stopBrowser(meetingID: String, error: String?) async throws {
+        guard status == .capturing, self.meetingID == meetingID, let browser else { throw CaptureError.notRunning }
+        if let error { lastError = error; await browser.fail(error) }
+        try await stop()
+    }
+
+    public func browserPacket(meetingID: String, kind: String, sequence: Int, timestamp: Int64, rate: Double, channels: Int, data: Data) async throws {
+        guard status == .capturing, self.meetingID == meetingID, let browser else { throw CaptureError.notRunning }
+        try await browser.accept(kind: kind, sequence: sequence, timestamp: timestamp, rate: rate, channels: channels, data: data)
     }
 
     public func stop() async throws {
@@ -262,7 +284,7 @@ public actor LocalCaptureController: CaptureAPIControlling {
     }
 
     public func snapshot() async -> APICaptureSnapshot {
-        let metrics = await adapter.metricsSnapshot()
+        let metrics = await metricsSnapshot()
         let pipelineError = await pipeline?.failure
         if let pipelineError { lastError = pipelineError }
         if status == .capturing, await pipeline?.captureEndedUnexpectedly == true {

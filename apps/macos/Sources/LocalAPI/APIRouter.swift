@@ -67,7 +67,7 @@ public struct APIRouter: Sendable {
         ]
         return .init(status: 200, headers: [
             "Content-Type": contentTypes[candidate.pathExtension.lowercased()] ?? "application/octet-stream",
-            "Cache-Control": candidate.lastPathComponent == "index.html" ? "no-store" : "public, max-age=31536000, immutable",
+            "Cache-Control": candidate.lastPathComponent == "index.html" ? "no-store" : relative.hasPrefix("assets/") ? "public, max-age=31536000, immutable" : "no-cache",
             "X-Content-Type-Options": "nosniff",
             "Content-Security-Policy": "default-src 'self'; connect-src 'self' ws://127.0.0.1:8765 ws://localhost:8765; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
         ], body: data)
@@ -101,6 +101,22 @@ public struct APIRouter: Sendable {
             return .problem(409, "SpeechAnalyzer requires macOS 26")
         }
         if route == "capture", request.method == .GET { return .json(200, await capture.snapshot()) }
+        if route == "capture/tab/stop", request.method == .POST {
+            struct Stop: Decodable { let meetingId: String; let error: String? }
+            let input = try JSONDecoder().decode(Stop.self, from: request.body)
+            try await capture.stopBrowser(meetingID: input.meetingId, error: input.error)
+            return .init(status: 204)
+        }
+        if route == "capture/tab/packet", request.method == .POST {
+            let parameters = Dictionary((components?.queryItems ?? []).map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { first, _ in first })
+            guard let meeting = parameters["meeting"], let kind = parameters["kind"],
+                  let sequence = parameters["sequence"].flatMap(Int.init), let timestamp = parameters["timestamp"].flatMap(Int64.init) else { return .problem(400, "Invalid tab packet") }
+            do {
+                try await capture.browserPacket(meetingID: meeting, kind: kind, sequence: sequence, timestamp: timestamp,
+                    rate: parameters["rate"].flatMap(Double.init) ?? 48000, channels: parameters["channels"].flatMap(Int.init) ?? 1, data: request.body)
+                return .init(status: 204)
+            } catch CaptureError.invalidSampleBuffer { return .problem(400, "Invalid or out-of-order tab packet") }
+        }
         if route == "capture/start", request.method == .POST {
             let input = request.body.isEmpty ? StartCaptureBody(targetId: nil) : try JSONDecoder().decode(StartCaptureBody.self, from: request.body)
             try await capture.start(targetID: input.targetId)

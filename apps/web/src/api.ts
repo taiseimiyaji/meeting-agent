@@ -40,6 +40,13 @@ async function requestBlob(path: string, signal?: AbortSignal): Promise<Blob> {
 const pause = () => new Promise((resolve) => setTimeout(resolve, 160));
 
 export const api = {
+  async stopTab(meetingId: string, error?: string): Promise<void> {
+    await request<void>('/api/capture/tab/stop', { method: 'POST', body: JSON.stringify({ meetingId, error }), headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : {} });
+  },
+  async tabPacket(meeting: string, kind: string, sequence: number, timestamp: number, body: Blob, rate: number, channels: number): Promise<void> {
+    const query = new URLSearchParams({ meeting, kind, sequence: String(sequence), timestamp: String(timestamp), rate: String(rate), channels: String(channels) });
+    await request<void>(`/api/capture/tab/packet?${query}`, { method: 'POST', body, signal: AbortSignal.timeout(10000), headers: { 'Content-Type': 'application/octet-stream', ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}) } });
+  },
   async captureStatus(): Promise<CaptureStatus> { if (!useMock) return request("/api/capture"); await pause(); return mock.capture; },
   async meetings(): Promise<Meeting[]> { if (!useMock) return (await request<MeetingPage>("/api/meetings?limit=100")).items; await pause(); return [...mock.meetings]; },
   async meeting(id: string): Promise<MeetingDetail> { if (!useMock) return request(`/api/meetings/${id}`); await pause(); const value = mock.detail(id); if (!value) throw new Error("Meeting not found"); return value; },
