@@ -87,7 +87,7 @@ public final class LocalAPIServer: @unchecked Sendable {
                         Task { await self.hub.add(client); client.receive() }
                     })
                 }
-            } else if complete || error != nil || buffer.count > 1_048_576 {
+            } else if complete || error != nil || buffer.count > 10 * 1024 * 1024 {
                 connection.cancel()
             } else {
                 self.receiveHTTPRequest(connection: connection, accumulated: buffer)
@@ -112,7 +112,7 @@ enum HTTPParser {
         }
         let bodyStart = headerRange.upperBound
         let length = Int(headers["content-length"] ?? "0") ?? 0
-        guard length >= 0, length <= 1_048_576, data.count >= bodyStart + length else { return nil }
+        guard length >= 0, length <= (requestLine[1].hasPrefix("/api/capture/tab/packet?") ? 9 * 1024 * 1024 : 1_048_576), data.count >= bodyStart + length else { return nil }
         return HTTPRequest(method: method, target: String(requestLine[1]), headers: headers,
                            body: data.subdata(in: bodyStart..<(bodyStart + length)))
     }

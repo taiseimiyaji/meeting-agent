@@ -79,6 +79,9 @@ actor TestFileTranscriber: FileTranscriber {
         }
         if args.first == "codex-contract" { try verifyCodexContract(); return }
         if args.first == "summary-readiness" { try await verifySummaryReadiness(); return }
+        if args.first == "tab-server", args.count == 2 { try await browserServer(root: URL(fileURLWithPath: args[1])); return }
+        if args.first == "browser" { try await verifyBrowserCapture(); return }
+        if args.first == "storage" { try await verifyLosslessStorage(); return }
         if args.first == "resources" { try verifyResourceBounds(); return }
         if args.first == "echo" { try await verifyEchoes(); return }
         let models = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Caches/MeetingAgentVerification/Models")
@@ -118,6 +121,8 @@ actor TestFileTranscriber: FileTranscriber {
         try await verifyCodexFailurePaths()
         try await verifySummaryReadiness()
         try verifyResourceBounds()
+        try await verifyLosslessStorage()
+        try await verifyBrowserCapture()
         try await verifyEchoes()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("MeetingVerification-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
