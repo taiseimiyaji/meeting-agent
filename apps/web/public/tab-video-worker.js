@@ -2,7 +2,7 @@ let stopped = false;
 onmessage = async ({ data }) => {
   if (data.stop) { stopped = true; return; }
   const { readable, epoch } = data;
-  let reader;
+  let reader, confirmation;
   try {
     reader = readable.getReader();
     let previous = -Infinity, canvas;
@@ -13,14 +13,20 @@ onmessage = async ({ data }) => {
         const timestamp = Math.floor(performance.timeOrigin + performance.now() - epoch);
         if (timestamp - previous < 190) continue;
         previous = timestamp;
+        clearTimeout(confirmation);
         const ratio = Math.min(1, 1920 / frame.displayWidth, 1080 / frame.displayHeight);
         const width = Math.max(1, Math.round(frame.displayWidth * ratio)), height = Math.max(1, Math.round(frame.displayHeight * ratio));
         if (!canvas || canvas.width !== width || canvas.height !== height) canvas = new OffscreenCanvas(width, height);
         canvas.getContext('2d').drawImage(frame, 0, 0, canvas.width, canvas.height);
         const blob = await canvas.convertToBlob({ type: 'image/png' });
         postMessage({ blob, timestamp });
+        // Damage-driven tab sources may stop emitting when a slide is static.
+        // Confirm the same captured pixels after the existing stability window.
+        confirmation = setTimeout(() => {
+          if (!stopped) postMessage({ blob, timestamp: Math.floor(performance.timeOrigin + performance.now() - epoch) });
+        }, 650);
       } finally { frame.close(); }
     }
   } catch (error) { postMessage({ error: String(error) }); }
-  finally { await reader?.cancel(); }
+  finally { clearTimeout(confirmation); await reader?.cancel(); }
 };
