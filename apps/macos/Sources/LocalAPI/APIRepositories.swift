@@ -16,9 +16,11 @@ public protocol MeetingAPIRepository: Sendable {
     func transcriptionProgress(meetingId: String) throws -> TranscriptionProgressResponse
     func enqueue(meetingId: String, kind: String) throws
     func screenImage(id: String) throws -> APIImage?
+    func screenImage(id: String, thumbnail: Bool) throws -> APIImage?
 }
 
 public extension MeetingAPIRepository {
+    func screenImage(id: String, thumbnail: Bool) throws -> APIImage? { try screenImage(id: id) }
     var changeVersion: Int64 { 0 }
     func prepareWhisperModel() async throws { throw CocoaError(.featureUnsupported) }
     func settings() throws -> AgentSettings { .init() }
@@ -32,6 +34,7 @@ public struct APIImage: Sendable {
 }
 
 public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Sendable {
+    private let thumbnails = ThumbnailCache()
     private let store: MeetingStore
     private let evidenceRoot: URL
 
@@ -77,27 +80,21 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
         let system = directory.appendingPathComponent("system.caf")
         let microphone = directory.appendingPathComponent("microphone.caf")
         func size(_ url: URL) -> Int64 {
-            Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            LosslessAudio.storedSize(url)
         }
         var systemBytes = size(system), microphoneBytes = size(microphone)
         var total = 0, completed = 0, failed = 0
         var provider: String? = nil
         for folder in [directory] + ["legacy-systemAudio", "legacy-microphone"].map({ directory.appendingPathComponent($0) }) {
-            let chunks = try AudioArchiveWriter.chunks(in: folder)
+            try AudioInventory.ensure(folder: folder, meetingId: meetingId, store: store)
             failed += try AudioArchiveWriter.corruptUnits(in: folder).count
-            for chunk in chunks {
-                total += 1
-                let bytes = size(folder.appendingPathComponent(chunk.fileName))
-                if chunk.kind == "microphone" { microphoneBytes += bytes } else { systemBytes += bytes }
-                let receipt = folder.appendingPathComponent("\(chunk.id).done")
-                if FileManager.default.fileExists(atPath: receipt.path) {
-                    completed += 1
-                    provider = (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: receipt)))?["provider"] ?? provider
-                }
-                if FileManager.default.fileExists(atPath: folder.appendingPathComponent("\(chunk.id).error").path) { failed += 1 }
+            for stats in try store.audioTrackStatistics(folder: folder.path) {
+                total += stats.total; completed += stats.completed; failed += stats.failed
+                if stats.kind == "microphone" { microphoneBytes += stats.bytes } else { systemBytes += stats.bytes }
+                provider = stats.provider ?? provider
             }
         }
-        let hasTranscript = !(try store.transcripts(meetingId: meetingId)).isEmpty
+        let hasTranscript = try store.hasTranscripts(meetingId: meetingId)
         let job = try store.latestAnalysisJob(meetingId: meetingId, kind: "transcribe")
         let live = try store.meeting(id: meetingId)?.status == .capturing
         let state: SummaryProgressState
@@ -125,12 +122,20 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
             let rerunAll = try store.latestAnalysisJob(meetingId: meetingId, kind: kind)?.status == .completed
             let directory = evidenceRoot.appendingPathComponent(meetingId).appendingPathComponent("Audio")
             for folder in [directory] + ["legacy-systemAudio", "legacy-microphone"].map({ directory.appendingPathComponent($0) }) {
+                store.invalidateAudioIndex(folder: folder.path)
                 for chunk in try AudioArchiveWriter.chunks(in: folder, recoverOpen: true) {
                     for ext in ["error", "attempt"] + (rerunAll ? ["done"] : []) { try? FileManager.default.removeItem(at: folder.appendingPathComponent("\(chunk.id).\(ext)")) }
                 }
             }
         }
         _ = try store.enqueueIfNeeded(AnalysisJob(meetingId: meetingId, kind: kind, priority: priority))
+    }
+
+    public func screenImage(id: String, thumbnail: Bool) throws -> APIImage? {
+        guard let screen = try store.screen(id: id) else { return nil }
+        if thumbnail, let cached = thumbnails.cached(key: screen.imagePath) { return cached }
+        guard let original = try screenImage(id: id) else { return nil }
+        return try thumbnail ? thumbnails.preview(original, key: screen.imagePath) : original
     }
 
     public func screenImage(id: String) throws -> APIImage? {
@@ -167,6 +172,8 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
 
 public protocol CaptureAPIControlling: Sendable {
     func snapshot() async -> APICaptureSnapshot
+    func stopBrowser(meetingID: String, error: String?) async throws
+    func browserPacket(meetingID: String, kind: String, sequence: Int, timestamp: Int64, rate: Double, channels: Int, data: Data) async throws
     func start(targetID: String?) async throws
     func stop() async throws
 }
@@ -185,8 +192,14 @@ public extension MeetingPipelineControlling {
 
 extension MeetingPipeline: MeetingPipelineControlling {}
 
+public extension CaptureAPIControlling {
+    func stopBrowser(meetingID: String, error: String?) async throws { throw CaptureError.notRunning }
+    func browserPacket(meetingID: String, kind: String, sequence: Int, timestamp: Int64, rate: Double, channels: Int, data: Data) async throws { throw CaptureError.notRunning }
+}
+
 public actor LocalCaptureController: CaptureAPIControlling {
     private let adapter: any MeetingCaptureAdapter
+    private var browser: BrowserCaptureAdapter?
     private let store: MeetingStore
     private let evidenceRoot: URL
     private let pipelineBuilder: @Sendable (URL) throws -> any MeetingPipelineControlling
@@ -214,7 +227,7 @@ public actor LocalCaptureController: CaptureAPIControlling {
     }
 
     public func availableTargets() async throws -> [CaptureTarget] { try await adapter.availableTargets() }
-    public func metricsSnapshot() async -> CaptureMetricsSnapshot { await adapter.metricsSnapshot() }
+    public func metricsSnapshot() async -> CaptureMetricsSnapshot { if let browser { return await browser.metricsSnapshot() }; return await adapter.metricsSnapshot() }
 
     public func start(targetID: String?) async throws {
         guard status == .idle || status == .failed else { throw CaptureError.alreadyRunning }
@@ -225,7 +238,12 @@ public actor LocalCaptureController: CaptureAPIControlling {
             let keyFrameDirectory = evidenceRoot
                 .appendingPathComponent(id, isDirectory: true)
                 .appendingPathComponent("KeyFrames", isDirectory: true)
-            let pipeline = try pipelineBuilder(keyFrameDirectory)
+            try FileManager.default.createDirectory(at: keyFrameDirectory, withIntermediateDirectories: true)
+            try StorageCapacity.require(at: keyFrameDirectory)
+            browser = targetID == "browser-tab" ? BrowserCaptureAdapter() : nil
+            let pipeline: any MeetingPipelineControlling
+            if let browser { pipeline = try MeetingPipeline(capture: browser, store: store, configuration: .init(keyFrameDirectory: keyFrameDirectory)) }
+            else { pipeline = try pipelineBuilder(keyFrameDirectory) }
             self.pipeline = pipeline
             try await pipeline.start(
                 meeting: meeting,
@@ -239,6 +257,17 @@ public actor LocalCaptureController: CaptureAPIControlling {
             status = .failed; lastError = error.localizedDescription
             throw error
         }
+    }
+
+    public func stopBrowser(meetingID: String, error: String?) async throws {
+        guard status == .capturing, self.meetingID == meetingID, let browser else { throw CaptureError.notRunning }
+        if let error { lastError = error; await browser.fail(error) }
+        try await stop()
+    }
+
+    public func browserPacket(meetingID: String, kind: String, sequence: Int, timestamp: Int64, rate: Double, channels: Int, data: Data) async throws {
+        guard status == .capturing, self.meetingID == meetingID, let browser else { throw CaptureError.notRunning }
+        try await browser.accept(kind: kind, sequence: sequence, timestamp: timestamp, rate: rate, channels: channels, data: data)
     }
 
     public func stop() async throws {
@@ -255,7 +284,7 @@ public actor LocalCaptureController: CaptureAPIControlling {
     }
 
     public func snapshot() async -> APICaptureSnapshot {
-        let metrics = await adapter.metricsSnapshot()
+        let metrics = await metricsSnapshot()
         let pipelineError = await pipeline?.failure
         if let pipelineError { lastError = pipelineError }
         if status == .capturing, await pipeline?.captureEndedUnexpectedly == true {

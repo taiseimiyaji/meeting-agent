@@ -66,6 +66,11 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
                     }
                     if now >= nextRetention {
                         try self.applyRetention()
+                        if try !self.store.hasLiveCapture() {
+                            for id in try self.store.storageCandidates() { _ = try self.store.enqueueIfNeeded(.init(meetingId: id, kind: "storage", priority: 0)) }
+                            try self.store.maintainDatabase()
+                            try TemporaryWorkspace.clean()
+                        }
                         nextRetention = now.addingTimeInterval(3600)
                     }
                     try await Task.sleep(for: .seconds(2))
@@ -82,7 +87,7 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
             guard [.completed, .partiallyCompleted, .interrupted].contains(meeting.status),
                   try store.activeSummary(meetingId: meeting.id) == nil else { continue }
             if let job = try store.latestAnalysisJob(meetingId: meeting.id, kind: "summarize"), job.status != .completed { continue }
-            if (try? Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot)) ?? true,
+            if (try? Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot, store: store)) ?? true,
                try store.latestAnalysisJob(meetingId: meeting.id, kind: "transcribe")?.status != .failed { continue }
             if try store.enqueueIfNeeded(.init(meetingId: meeting.id, kind: "summarize", priority: 2)) { count += 1 }
         }
@@ -95,7 +100,7 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
             guard [.capturing, .completed, .partiallyCompleted, .interrupted, .failed].contains(meeting.status) else { continue }
             if let job = try store.latestAnalysisJob(meetingId: meeting.id, kind: "transcribe"),
                [.pending, .processing].contains(job.status) { continue }
-            guard (try? Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot)) ?? true else { continue }
+            guard (try? Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot, store: store)) ?? true else { continue }
             if let job = try store.latestAnalysisJob(meetingId: meeting.id, kind: "transcribe"), job.status == .failed {
                 let directory = evidenceRoot.appendingPathComponent(meeting.id).appendingPathComponent("Audio")
                 let fresh = try ([directory] + ["legacy-systemAudio", "legacy-microphone"].map { directory.appendingPathComponent($0) }).contains { folder in
@@ -117,6 +122,9 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
         let settings = settings
         let injected = fileTranscriber
         let whisper = whisper
+        await worker.register(kind: "storage") { job in
+            try StorageMaintenance.run(meetingId: job.meetingId, root: evidenceRoot, store: store)
+        }
         await worker.register(kind: "transcribe") { job in
             let provider: any FileTranscriber
             if let injected { provider = injected }
@@ -133,8 +141,9 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
             try await Self.transcribe(meetingID: job.meetingId, store: store, evidenceRoot: evidenceRoot, provider: provider)
             if let meeting = try store.meeting(id: job.meetingId),
                ![.capturing, .finalizing].contains(meeting.status),
-               try !Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot) {
+               try !Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot, store: store) {
                 _ = try store.enqueueIfNeeded(.init(meetingId: job.meetingId, kind: "summarize", priority: 2))
+                _ = try store.enqueueIfNeeded(.init(meetingId: job.meetingId, kind: "storage", priority: 0))
             }
         }
         await worker.register(kind: "summarize") { job in
@@ -145,7 +154,7 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
             guard ![.capturing, .finalizing].contains(meeting.status) else {
                 throw AnalysisDeferred("録音の終了を待っています。")
             }
-            let pending = try Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot)
+            let pending = try Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot, store: store)
             let transcription = try store.latestAnalysisJob(meetingId: job.meetingId, kind: "transcribe")
             if pending && transcription?.status != .failed {
                 throw AnalysisDeferred("文字起こしの完了を待っています。")
@@ -185,13 +194,14 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
 
     public func stop() async { scheduler?.cancel(); scheduler = nil; await worker.stop() }
 
-    private static func hasPendingAudio(meeting: Meeting, evidenceRoot: URL) throws -> Bool {
+    private static func hasPendingAudio(meeting: Meeting, evidenceRoot: URL, store: MeetingStore) throws -> Bool {
         let directory = evidenceRoot.appendingPathComponent(meeting.id).appendingPathComponent("Audio")
         let closed = ![.capturing, .finalizing].contains(meeting.status)
         for folder in [directory] + ["legacy-systemAudio", "legacy-microphone"].map({ directory.appendingPathComponent($0) }) {
-            let chunks = try AudioArchiveWriter.chunks(in: folder, recoverOpen: closed)
+            try AudioInventory.ensure(folder: folder, meetingId: meeting.id, store: store, recoverOpen: closed)
+            let stats = try store.audioStatistics(folder: folder.path)
             if try !AudioArchiveWriter.corruptUnits(in: folder).isEmpty { return true }
-            if chunks.contains(where: { !FileManager.default.fileExists(atPath: folder.appendingPathComponent("\($0.id).done").path) }) { return true }
+            if stats.total > stats.completed { return true }
         }
         return closed && ["system.caf", "microphone.caf"].contains {
             FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path) &&
@@ -234,7 +244,12 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
         var failures: [String] = []
         if closed {
             for name in ["system.caf", "microphone.caf"] {
-                do { try importLegacy(in: directory, only: name) } catch { failures.append(error.localizedDescription) }
+                do {
+                    let needsImport = FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path) && !FileManager.default.fileExists(atPath: directory.appendingPathComponent(name + ".imported").path)
+                    try importLegacy(in: directory, only: name)
+                    let kind = name == "system.caf" ? "systemAudio" : "microphone"
+                    if needsImport { store.invalidateAudioIndex(folder: directory.appendingPathComponent("legacy-" + kind).path) }
+                } catch { failures.append(error.localizedDescription) }
             }
         }
         let directories = [directory] + ["legacy-systemAudio", "legacy-microphone"].map { directory.appendingPathComponent($0) }
@@ -242,10 +257,12 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
         var totalChunks = 0
         for folder in directories {
             let chunks: [AudioChunk]
-            do { chunks = try AudioArchiveWriter.chunks(in: folder, recoverOpen: closed) }
+            do { chunks = try AudioInventory.pending(folder: folder, meetingId: meetingID, store: store, recoverOpen: closed, limit: max(0, 4 - processed)) }
             catch { failures.append(error.localizedDescription); continue }
             failures.append(contentsOf: try AudioArchiveWriter.corruptUnits(in: folder))
-            totalChunks += chunks.count
+            let statistics = try store.audioStatistics(folder: folder.path)
+            totalChunks += statistics.total
+            if statistics.failed > 0 { failures.append("再試行上限に達した音声区間があります。手動復旧してください。") }
             for chunk in chunks {
                 try Task.checkCancellation()
                 let receipt = folder.appendingPathComponent("\(chunk.id).done")
@@ -257,7 +274,10 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
                 processed += 1
                 do {
                     try Data(String(attempts + 1).utf8).write(to: attemptFile, options: .atomic)
-                    let file = folder.appendingPathComponent(chunk.fileName)
+                    let logicalFile = folder.appendingPathComponent(chunk.fileName)
+                    let restored = try LosslessAudio.materialize(logicalFile)
+                    defer { restored.cleanup() }
+                    let file = restored.url
                     let silent = try isSilent(file)
                     let result = silent ? OfflineTranscript(text: "", startedAtMs: 0, endedAtMs: 0) :
                         try await withTranscriptionDeadline { try await provider.transcribe(file: file) }
@@ -269,10 +289,7 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
                     let source: AudioSource = chunk.kind == CaptureOutputKind.microphone.rawValue ? .microphone : .system
                     var start = min(chunk.endedAtMs, chunk.startedAtMs + max(0, result.startedAtMs))
                     if (chunk.overlapMs ?? 0) > 0,
-                       let previous = try store.transcripts(meetingId: meetingID).last(where: {
-                           $0.id != chunk.id && $0.source == source && $0.timeRange.startedAtMs < start &&
-                           ($0.timeRange.endedAtMs ?? 0) > start
-                       }) {
+                       let previous = try store.previousOverlappingTranscript(meetingId: meetingID, source: source, before: start, excluding: chunk.id) {
                         let limit = min(Int(Double(chunk.overlapMs ?? 0) / 1000 * 12), min(previous.text.count, text.count))
                         if limit >= 4 {
                             for length in stride(from: limit, through: 4, by: -1) where previous.text.suffix(length) == text.prefix(length) {
@@ -290,10 +307,13 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
                     try JSONEncoder().encode(["provider": provider.provider, "status": silent ? "silence" : "completed"])
                         .write(to: receipt, options: .atomic)
                     try? FileManager.default.removeItem(at: folder.appendingPathComponent("\(chunk.id).error"))
+                    // Packing is scheduled separately at idle, after analysis completes.
+                    try AudioInventory.record(chunk, folder: folder, meetingId: meetingID, store: store)
                 } catch {
                     if error is CancellationError { try? Data(String(attempts).utf8).write(to: attemptFile, options: .atomic); throw error }
                     failures.append("\(chunk.kind) @\(chunk.startedAtMs): \(error.localizedDescription)")
                     try? Data(error.localizedDescription.utf8).write(to: folder.appendingPathComponent("\(chunk.id).error"), options: .atomic)
+                    try? AudioInventory.record(chunk, folder: folder, meetingId: meetingID, store: store)
                 }
             }
         }
@@ -320,21 +340,41 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
             try audio.read(into: buffer)
             guard let channels = buffer.floatChannelData else { return false }
             for c in 0..<Int(buffer.format.channelCount) {
-                for f in 0..<Int(buffer.frameLength) where abs(channels[c][f]) > 0.000_01 { return false }
+                for f in 0..<Int(buffer.frameLength) {
+                    let value = buffer.format.isInterleaved ? channels[0][f * Int(buffer.format.channelCount) + c] : channels[c][f]
+                    if abs(value) > 0.000_01 { return false }
+                }
             }
         }
         return true
     }
 
     private func applyRetention() throws {
-        let days = try settings.load().retentionDays
+        let preferences = try settings.load()
+        let audioDays = preferences.audioRetentionDays ?? 0
+        if audioDays > 0 {
+            for meeting in try store.retentionCandidates(before: Date().addingTimeInterval(-Double(audioDays) * 86400)) {
+                guard UUID(uuidString: meeting.id) != nil, try store.activeSummary(meetingId: meeting.id) != nil,
+                      try !Self.hasPendingAudio(meeting: meeting, evidenceRoot: evidenceRoot, store: store) else { continue }
+                let busy = try ["transcribe", "summarize", "export", "storage"].contains { kind in
+                    if let job = try store.latestAnalysisJob(meetingId: meeting.id, kind: kind) { return [.pending,.processing].contains(job.status) }
+                    return false
+                }
+                let directory = evidenceRoot.appendingPathComponent(meeting.id).appendingPathComponent("Audio")
+                if !busy, FileManager.default.fileExists(atPath: directory.path) {
+                    try FileManager.default.removeItem(at: directory)
+                    try store.deleteAudioIndex(meetingId: meeting.id)
+                }
+            }
+        }
+        let days = preferences.retentionDays
         guard days > 0 else { return }
         let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
         for meeting in try store.retentionCandidates(before: cutoff) {
             guard let ended = meeting.endedAt, ended < cutoff,
                   [.completed, .partiallyCompleted, .interrupted, .failed].contains(meeting.status),
                   UUID(uuidString: meeting.id) != nil else { continue }
-            let busy = try ["transcribe", "summarize", "export"].contains { kind in
+            let busy = try ["transcribe", "summarize", "export", "storage"].contains { kind in
                 guard let job = try store.latestAnalysisJob(meetingId: meeting.id, kind: kind) else { return false }
                 return [.pending, .processing].contains(job.status)
             }

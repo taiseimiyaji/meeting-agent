@@ -24,7 +24,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 function mount(cached = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  if (cached) client.setQueryData(["screen-image", images[0].imageUrl], new Blob(["image"]));
+  if (cached) client.setQueryData(["screen-image", images[0].imageUrl + "?thumbnail=1"], new Blob(["image"]));
   render(<StrictMode><QueryClientProvider client={client}><SummaryEvidence item={item} transcripts={speech} screens={images}/></QueryClientProvider></StrictMode>);
 }
 it("resolves screenshots through cited speech and excludes unrelated screens", () => {
@@ -49,7 +49,7 @@ it("renders authenticated screenshots, the cited speech, and an accessible enlar
   const image = await screen.findByRole("img", { name: "設計図" });
   expect(image.getAttribute("src")).toMatch(/^blob:test-image-/);
   expect(URL.revokeObjectURL).not.toHaveBeenCalledWith(image.getAttribute("src"));
-  expect(fetchImage).toHaveBeenCalledWith(images[0].imageUrl, expect.any(AbortSignal));
+  expect(fetchImage).toHaveBeenCalledWith(images[0].imageUrl + "?thumbnail=1", expect.any(AbortSignal));
   // StrictMode cancels the first mount; only the remounted request stays active.
   expect(fetchImage.mock.calls.filter((call) => !(call[1] as AbortSignal).aborted)).toHaveLength(1);
   expect(screen.getByText(/発話中に表示/)).toBeTruthy();
@@ -57,6 +57,7 @@ it("renders authenticated screenshots, the cited speech, and an accessible enlar
   expect(screen.queryByText("別の話題")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "00:01の画面を拡大" }));
   expect(screen.getByRole("dialog", { name: "スクリーンショットの拡大" })).toBeTruthy();
+  expect(fetchImage).toHaveBeenCalledWith(images[0].imageUrl, expect.any(AbortSignal));
   fireEvent.click(screen.getByRole("button", { name: "閉じる" }));
   expect(screen.queryByRole("dialog")).toBeNull();
 });

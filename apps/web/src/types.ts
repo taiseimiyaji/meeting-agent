@@ -81,6 +81,7 @@ export interface Settings {
   summaryProvider: "local_heuristic" | "apple_foundation_models" | "codex_chatgpt";
   codexIncludeScreens?: boolean;
   retentionDays: number;
+  audioRetentionDays?: number;
   recoveryMode: boolean;
 }
 export type ServerEvent =

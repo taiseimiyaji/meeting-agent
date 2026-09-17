@@ -36,6 +36,7 @@ public struct AnalysisJob: Codable, Equatable, Sendable, Identifiable {
 /// WAL lets capture writes coexist with readers in other processes.
 public final class MeetingStore: @unchecked Sendable {
     private var db: OpaquePointer?
+    private var indexedAudioFolders = Set<String>()
     private var cachedTimeline: (version: Int64, value: Timeline)?
     private let lock = NSRecursiveLock()
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -77,6 +78,8 @@ public final class MeetingStore: @unchecked Sendable {
                     try execute("PRAGMA user_version = 2")
                 }
             }
+            try execute("CREATE TABLE IF NOT EXISTS audio_units(id TEXT PRIMARY KEY,meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,folder TEXT NOT NULL,payload TEXT NOT NULL,status TEXT NOT NULL,stored_bytes INTEGER NOT NULL,provider TEXT)")
+            try execute("CREATE INDEX IF NOT EXISTS audio_units_pending ON audio_units(folder,status)")
             try execute("CREATE INDEX IF NOT EXISTS screen_pending_queue ON screen_events(meeting_id,analysis_status,started_at_ms,id)")
         }
     }
@@ -341,6 +344,50 @@ public final class MeetingStore: @unchecked Sendable {
         return values
     }
 
+    /// Heavy storage work is deferred while capture is active.
+    public func hasLiveCapture() throws -> Bool { try scalarInt("SELECT count(*) FROM meetings WHERE status IN ('capturing','finalizing')") > 0 }
+    public func storageCandidates(limit: Int = 4) throws -> [String] {
+        var result: [String] = []
+        try query("SELECT m.id FROM meetings m WHERE m.status IN ('completed','partially_completed','interrupted','failed') AND NOT EXISTS(SELECT 1 FROM analysis_jobs j WHERE j.meeting_id=m.id AND j.kind='storage') ORDER BY m.started_at LIMIT ?", [.integer(Int64(limit))]) { result.append($0.text(0)!) }
+        return result
+    }
+    public func deleteAudioIndex(meetingId: String) throws { try run("DELETE FROM audio_units WHERE meeting_id=?", [.text(meetingId)]) }
+    public func maintainDatabase() throws {
+        try locked {
+            guard try !hasLiveCapture() else { return }
+            var rows: [(String,String)] = []
+            try query("SELECT id,payload_json FROM summaries WHERE is_active=0 AND payload_json IS NOT NULL AND json_extract(payload_json,'$.storageCodec') IS NULL LIMIT 16") { rows.append(($0.text(0)!, $0.text(1)!)) }
+            for (id, payload) in rows {
+                let raw = Data(payload.utf8)
+                let packed = try (raw as NSData).compressed(using: .lzfse)
+                guard try packed.decompressed(using: .lzfse) == raw as NSData else { continue }
+                let wrapped = try JSONSerialization.data(withJSONObject: ["storageCodec":"lzfse", "bytes":raw.count, "data":packed.base64EncodedString()], options: [.sortedKeys])
+                if wrapped.count < raw.count { try run("UPDATE summaries SET payload_json=? WHERE id=? AND is_active=0", [.text(String(decoding: wrapped, as: UTF8.self)),.text(id)]) }
+            }
+            let free = try scalarInt("PRAGMA freelist_count"), pages = try scalarInt("PRAGMA page_count"), pageSize = try scalarInt("PRAGMA page_size")
+            if free > 1024 && free * 5 > pages {
+                var path: String?
+                try query("PRAGMA database_list") { if $0.text(1) == "main" { path = $0.text(2) } }
+                if let path, !path.isEmpty,
+                   let available = try FileManager.default.attributesOfFileSystem(forPath: URL(fileURLWithPath: path).deletingLastPathComponent().path)[.systemFreeSize] as? NSNumber,
+                   available.int64Value > Int64(pages) * Int64(pageSize) * 2 + 512 * 1024 * 1024 {
+                    try execute("VACUUM")
+                    cachedTimeline = nil
+                }
+            }
+            try execute("PRAGMA wal_checkpoint(PASSIVE)")
+        }
+    }
+    private func summaryPayload(_ data: Data) throws -> Data {
+        if let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], object["storageCodec"] as? String == "lzfse" {
+            guard let encoded = object["data"] as? String, let packed = Data(base64Encoded: encoded), let count = object["bytes"] as? Int else { throw MeetingStoreError.invalidData("Invalid stored summary") }
+            let restored = try (packed as NSData).decompressed(using: .lzfse) as Data
+            guard restored.count == count else { throw MeetingStoreError.invalidData("Stored summary size mismatch") }
+            return restored
+        }
+        return data
+    }
+
     /// Retention is not truncated by UI pagination.
     public func retentionCandidates(before: Date) throws -> [Meeting] {
         var ids: [String] = []
@@ -371,7 +418,7 @@ public final class MeetingStore: @unchecked Sendable {
         try query("SELECT summary,payload_json FROM summaries WHERE meeting_id=? AND is_active=1 ORDER BY created_at DESC LIMIT 1", [.text(meetingId)]) { row in
             if let payload = row.text(1), let data = payload.data(using: .utf8) {
                 let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-                value = try decoder.decode(MeetingSummary.self, from: data)
+                value = try decoder.decode(MeetingSummary.self, from: summaryPayload(data))
             } else {
                 value = MeetingSummary(summary: row.text(0) ?? "")
             }
@@ -409,10 +456,51 @@ public final class MeetingStore: @unchecked Sendable {
         return nil
     }
 
+    public func needsAudioIndex(folder: String) -> Bool { locked { !indexedAudioFolders.contains(folder) } }
+    public func markAudioIndexed(folder: String) { locked { _ = indexedAudioFolders.insert(folder) } }
+    public func invalidateAudioIndex(folder: String) { locked { _ = indexedAudioFolders.remove(folder); _ = indexedAudioFolders.remove(folder + "#recovered") } }
+    public func indexAudio(id: String, meetingId: String, folder: String, payload: String, status: String, bytes: Int64, provider: String? = nil) throws {
+        try run("INSERT INTO audio_units(id,meeting_id,folder,payload,status,stored_bytes,provider) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,status=excluded.status,stored_bytes=excluded.stored_bytes,provider=excluded.provider", [.text(id),.text(meetingId),.text(folder),.text(payload),.text(status),.integer(bytes),.optionalText(provider)])
+    }
+    public func pendingAudioPayloads(folder: String, limit: Int = 4) throws -> [String] {
+        var result: [String] = []
+        try query("SELECT payload FROM audio_units WHERE folder=? AND status='pending' ORDER BY json_extract(payload,'$.startedAtMs'),id LIMIT ?", [.text(folder),.integer(Int64(limit))]) { result.append($0.text(0)!) }
+        return result
+    }
+    public func audioStatistics(folder: String) throws -> (total: Int, completed: Int, failed: Int, bytes: Int64) {
+        var result = (0,0,0,Int64(0))
+        try query("SELECT count(*),COALESCE(sum(status='done'),0),COALESCE(sum(status='failed'),0),COALESCE(sum(stored_bytes),0) FROM audio_units WHERE folder=?", [.text(folder)]) { result = (Int($0.int(0)),Int($0.int(1)),Int($0.int(2)),$0.int(3)) }
+        return result
+    }
+
+    public func hasTranscripts(meetingId: String) throws -> Bool {
+        var result = false
+        try query("SELECT EXISTS(SELECT 1 FROM transcript_events WHERE meeting_id=?)", [.text(meetingId)]) { result = $0.int(0) > 0 }
+        return result
+    }
+    public func audioTrackStatistics(folder: String) throws -> [(kind: String, total: Int, completed: Int, failed: Int, bytes: Int64, provider: String?)] {
+        var result: [(String,Int,Int,Int,Int64,String?)] = []
+        try query("SELECT json_extract(payload,'$.kind'),count(*),sum(status='done'),sum(status='failed'),sum(stored_bytes),max(provider) FROM audio_units WHERE folder=? GROUP BY json_extract(payload,'$.kind')", [.text(folder)]) {
+            result.append(($0.text(0) ?? "systemAudio",Int($0.int(1)),Int($0.int(2)),Int($0.int(3)),$0.int(4),$0.text(5)))
+        }
+        return result
+    }
+
+    public func previousOverlappingTranscript(meetingId: String, source: AudioSource, before: Int64, excluding: String) throws -> TranscriptEvent? {
+        var value: TranscriptEvent?
+        try query("SELECT id,meeting_id,revision,started_at_ms,ended_at_ms,speaker,source,text,is_final FROM transcript_events WHERE meeting_id=? AND source=? AND id!=? AND started_at_ms<? AND ended_at_ms>? ORDER BY started_at_ms DESC,id DESC LIMIT 1", [.text(meetingId), .text(source.rawValue), .text(excluding), .integer(before), .integer(before)]) { value = try decodeTranscript($0) }
+        return value
+    }
+
     public func transcripts(meetingId: String) throws -> [TranscriptEvent] {
         var values: [TranscriptEvent] = []
         try query("SELECT id,meeting_id,revision,started_at_ms,ended_at_ms,speaker,source,text,is_final FROM transcript_events WHERE meeting_id=? ORDER BY started_at_ms,id", [.text(meetingId)]) { row in values.append(try decodeTranscript(row)) }
-        for index in values.indices { values[index].screenRefs = try references(transcriptId: values[index].id) }
+        var refs: [String: [ScreenReference]] = [:]
+        try query("SELECT r.transcript_id,r.screen_id,r.relation,r.overlap_ms,r.confidence,r.provider FROM transcript_screen_refs r JOIN transcript_events t ON t.id=r.transcript_id WHERE t.meeting_id=? ORDER BY r.overlap_ms DESC", [.text(meetingId)]) { row in
+            guard let relation = ScreenRelation(rawValue: row.text(2) ?? "") else { throw MeetingStoreError.invalidData("Invalid screen relation") }
+            refs[row.text(0)!, default: []].append(ScreenReference(screenId: row.text(1)!, relation: relation, overlapMs: row.optionalInt(3), confidence: row.optionalDouble(4), provider: row.text(5)))
+        }
+        for index in values.indices { values[index].screenRefs = refs[values[index].id] ?? [] }
         return values
     }
 

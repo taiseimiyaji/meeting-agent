@@ -30,6 +30,6 @@ function ScreenshotDialog({ screen, close }: { screen: ScreenEvent; close: () =>
   useEffect(() => { const element = dialog.current; element?.showModal(); return () => element?.close(); }, []);
   return <dialog ref={dialog} className="screenshot-dialog" aria-label="スクリーンショットの拡大" onCancel={close}>
     <header><strong>{time(screen.startedAtMs)} · {screen.description ?? "会議の画面"}</strong><button autoFocus onClick={close}>閉じる</button></header>
-    <AuthenticatedImage path={screen.imageUrl} alt={screen.description ?? "会議のスクリーンショット"}/>
+    <AuthenticatedImage original path={screen.imageUrl} alt={screen.description ?? "会議のスクリーンショット"}/>
   </dialog>;
 }

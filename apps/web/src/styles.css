@@ -25,3 +25,4 @@ main { grid-column:2; max-width:1300px;width:100%;padding:52px 6vw 80px;margin:a
 .codex-settings{padding:16px 0;color:#35574c;font-size:13px;line-height:1.7}.codex-settings button{margin-top:14px}.summary>.overview-evidence,.summary>.speaker-attributions{margin-top:20px;background:#fff;color:#17352d;border:1px solid #dce3de}.speaker-attributions article{border-top:1px solid #dce3de;padding-top:12px}
 
 .pagination { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 0; }
+.capture-card{gap:20px;flex-wrap:wrap}.capture-actions{flex-wrap:wrap}.capture-card:not(.live) .ghost{color:#365047}.ghost:disabled{opacity:.5}

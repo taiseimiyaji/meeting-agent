@@ -1,0 +1,27 @@
+<!doctype html><html lang="ja"><meta charset="UTF-8"><title>会議タブ収録・合成データ検証</title>
+<h1>合成映像と合成音声のみの検証</h1><p>実マイク・実タブ・ユーザーの会議は取得しません。</p>
+<button id="start">合成タブの収録開始</button><button id="stop">停止して確定</button><output id="state">待機</output>
+<canvas id="source" width="1280" height="720"></canvas>
+<script type="module">
+import { tabCapture } from '../src/TabCapture';
+const state = document.querySelector('#state'), canvas = document.querySelector('#source'), draw = canvas.getContext('2d');
+let audio, timer;
+const synthetic = async () => {
+ audio = new AudioContext(); await audio.resume();
+ const oscillator = audio.createOscillator(), destination = audio.createMediaStreamDestination();
+ oscillator.frequency.value = 440; oscillator.connect(destination); oscillator.start();
+ let index = 0;
+ timer = setInterval(() => { draw.fillStyle = index % 2 ? '#003366' : '#cccccc'; draw.fillRect(0,0,1280,720); draw.fillStyle = '#f00'; draw.font = '48px sans-serif'; draw.fillText('会議タブ A / ' + index++, 100, 150); }, 1000);
+ const stream = canvas.captureStream(5); stream.addTrack(destination.stream.getAudioTracks()[0]);
+ const video = stream.getVideoTracks()[0], settings = video.getSettings.bind(video);
+ video.getSettings = () => ({ ...settings(), displaySurface: 'browser' });
+ return stream;
+};
+navigator.mediaDevices.getDisplayMedia = synthetic;
+navigator.mediaDevices.getUserMedia = async () => {
+ const destination = audio.createMediaStreamDestination(), oscillator = audio.createOscillator();
+ oscillator.frequency.value = 880; oscillator.connect(destination); oscillator.start(); return destination.stream;
+};
+document.querySelector('#start').onclick = async () => { try { await tabCapture.start(error => state.textContent = error.message); state.textContent = '収録中'; } catch (error) { state.textContent = error.message; } };
+document.querySelector('#stop').onclick = async () => { try { await tabCapture.stop(); clearInterval(timer); await audio?.close(); state.textContent = '保存完了'; } catch(error) { state.textContent = error.message; } };
+</script></html>

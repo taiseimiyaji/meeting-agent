@@ -14,6 +14,7 @@ public enum CodexCompanion {
     private static func temporaryRequest() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("meeting-agent-codex-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        try TemporaryWorkspace.mark(directory)
         try Data().write(to: directory.appendingPathComponent("request.meetingcodex"))
         return directory
     }

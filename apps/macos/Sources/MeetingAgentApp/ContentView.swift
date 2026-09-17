@@ -129,6 +129,7 @@ struct ContentView: View {
                     Button { webReloadID += 1 } label: {
                         Label("Reload", systemImage: "arrow.clockwise")
                     }
+                    Button("Chromeでタブ収録を開く") { model.openChromeWebUI() }
                     Menu {
                         Button("Open in Browser") { model.openWebUI() }
                         Button("Copy API Configuration") { model.copyAPIConfiguration() }

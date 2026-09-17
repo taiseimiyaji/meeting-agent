@@ -126,6 +126,16 @@ final class AgentViewModel: ObservableObject {
         NSPasteboard.general.clearContents(); NSPasteboard.general.setString(value, forType: .string)
     }
 
+    func openChromeWebUI() {
+        guard let url = webUIURL else { return }
+        guard let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") else {
+            errorMessage = "Google Chromeをインストールしてから、もう一度開いてください。"; return
+        }
+        NSWorkspace.shared.open([url], withApplicationAt: chrome, configuration: .init()) { _, error in
+            if let error { Task { @MainActor in self.errorMessage = error.localizedDescription } }
+        }
+    }
+
     func openWebUI() {
         guard let url = webUIURL else { return }
         NSWorkspace.shared.open(url)
