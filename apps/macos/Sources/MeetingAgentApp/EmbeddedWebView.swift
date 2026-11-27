@@ -41,7 +41,9 @@ struct MeetingWebView: NSViewRepresentable {
     @Binding var state: WebLoadState
 
     func makeNSView(context: Context) -> WKWebView {
-        let webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController.add(context.coordinator, name: "saveSummaryMarkdown")
+        let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         context.coordinator.load(webView)
         return webView
@@ -57,12 +59,13 @@ struct MeetingWebView: NSViewRepresentable {
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
         coordinator.timeout?.cancel()
         webView.navigationDelegate = nil
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "saveSummaryMarkdown")
         webView.stopLoading()
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
-    @MainActor final class Coordinator: NSObject, WKNavigationDelegate {
+    @MainActor final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var parent: MeetingWebView
         var timeout: Task<Void, Never>?
         var generation = 0
@@ -83,6 +86,25 @@ struct MeetingWebView: NSViewRepresentable {
                 guard !Task.isCancelled, let self, current == self.generation else { return }
                 self.fail("画面の読み込みがタイムアウトしました。再試行してください。")
                 webView?.stopLoading()
+            }
+        }
+
+        func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            let origin = message.frameInfo.securityOrigin
+            guard message.frameInfo.isMainFrame, origin.protocol == parent.url.scheme,
+                  origin.host == parent.url.host, origin.port == parent.url.port,
+                  let payload = message.body as? [String: String],
+                  let markdown = payload["markdown"], let filename = payload["filename"],
+                  let window = message.webView?.window else { return }
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = (filename as NSString).lastPathComponent
+            panel.beginSheetModal(for: window) { result in
+                guard result == .OK, let url = panel.url else { return }
+                do {
+                    try markdown.write(to: url, atomically: true, encoding: .utf8)
+                } catch {
+                    NSAlert(error: error).beginSheetModal(for: window)
+                }
             }
         }
 

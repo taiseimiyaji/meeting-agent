@@ -108,3 +108,23 @@ it("shares one timeline download and does not refetch it for capture metrics", a
   await act(async () => state.callback?.({ type: "capture", capture: { status: "capturing", meetingId: "m1", videoFrames: 42 } }));
   expect(state.timelineCalls).toBe(1);
 });
+
+it("exports the displayed minutes as Markdown from the embedded summary screen", async () => {
+  const postMessage = vi.fn();
+  vi.stubGlobal("webkit", { messageHandlers: { saveSummaryMarkdown: { postMessage } } });
+  try {
+    state.discussions = [{ title: "次のリリース", summary: "金曜日に公開する。", evidenceIds: ["private-id"] }];
+    mount();
+    fireEvent.click(await screen.findByText("ライブ表示"));
+    fireEvent.click(screen.getByRole("button", { name: "Summary" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Markdownで保存" }));
+    const [file] = postMessage.mock.calls[0];
+    const local = new Date("2026-09-07T00:00:00Z");
+    const stamp = new Intl.DateTimeFormat("sv-SE", { dateStyle: "short", timeStyle: "short" }).format(local);
+    expect(file.filename).toBe(stamp.replace(" ", "_").replace(":", "-") + "_検証会議.md");
+    expect(file.markdown).toContain("## 次のリリース\n\n金曜日に公開する。");
+    expect(file.markdown).not.toContain("private-id");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
