@@ -43,6 +43,7 @@ struct MeetingWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(context.coordinator, name: "saveSummaryMarkdown")
+        configuration.userContentController.add(context.coordinator, name: "saveSummaryPDF")
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         context.coordinator.load(webView)
@@ -60,6 +61,7 @@ struct MeetingWebView: NSViewRepresentable {
         coordinator.timeout?.cancel()
         webView.navigationDelegate = nil
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "saveSummaryMarkdown")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "saveSummaryPDF")
         webView.stopLoading()
     }
 
@@ -94,14 +96,22 @@ struct MeetingWebView: NSViewRepresentable {
             guard message.frameInfo.isMainFrame, origin.protocol == parent.url.scheme,
                   origin.host == parent.url.host, origin.port == parent.url.port,
                   let payload = message.body as? [String: String],
-                  let markdown = payload["markdown"], let filename = payload["filename"],
+                  let filename = payload["filename"],
                   let window = message.webView?.window else { return }
+            let data: Data
+            if message.name == "saveSummaryPDF", let encoded = payload["pdf"], let pdf = Data(base64Encoded: encoded) {
+                data = pdf
+            } else if message.name == "saveSummaryMarkdown", let markdown = payload["markdown"] {
+                data = Data(markdown.utf8)
+            } else {
+                return
+            }
             let panel = NSSavePanel()
             panel.nameFieldStringValue = (filename as NSString).lastPathComponent
             panel.beginSheetModal(for: window) { result in
                 guard result == .OK, let url = panel.url else { return }
                 do {
-                    try markdown.write(to: url, atomically: true, encoding: .utf8)
+                    try data.write(to: url, options: .atomic)
                 } catch {
                     NSAlert(error: error).beginSheetModal(for: window)
                 }

@@ -176,6 +176,13 @@ function ScreensPanel({ items, loading, focus, onTranscript }: { items: ScreenEv
 }
 
 function SummaryPanel({ meeting, value, progress, loading, error, generating, onGenerate, transcripts, screens, evidenceLoading, evidenceError }: { meeting: Awaited<ReturnType<typeof api.meeting>> | undefined; transcripts: TranscriptEvent[]; screens: ScreenEvent[]; evidenceLoading: boolean; evidenceError: Error | null; value: Awaited<ReturnType<typeof api.summary>> | undefined; progress: Awaited<ReturnType<typeof api.summaryProgress>> | undefined; loading: boolean; error: Error | null; generating: boolean; onGenerate: () => void }) {
+  const pdf = useMutation({
+    mutationFn: async () => {
+      if (!meeting || !value) return;
+      const { saveSummaryPdf } = await import("./summaryPdf");
+      await saveSummaryPdf(meeting, value, transcripts, screens);
+    },
+  });
   if (loading) return <Empty>要約を確認しています…</Empty>;
   if (error) return <div className="error-box"><strong>要約の取得に失敗しました</strong><span>{error.message}</span><button className="primary" onClick={onGenerate} disabled={generating}>{generating ? "再生成を依頼中…" : "要約を再生成"}</button></div>;
   if (!value) {
@@ -185,7 +192,7 @@ function SummaryPanel({ meeting, value, progress, loading, error, generating, on
   }
   const regenerating = generating || ["queued", "running", "retrying"].includes(progress?.state ?? "");
   const evidence = { transcripts, screens, evidenceLoading, evidenceError };
-  return <div className="summary"><div className="summary-regenerate"><button className="ghost" disabled={!meeting} onClick={() => meeting && downloadSummary(meeting, value)}>Markdownで保存</button><button className="primary" onClick={onGenerate} disabled={regenerating}>{regenerating ? "要約を再生成中…" : "要約を再生成"}</button>{progress?.state === "failed" && <p className="error-box">{progress.error ?? "要約の再生成に失敗しました。"}</p>}</div><section><p className="eyebrow">OVERVIEW</p><h2>議事録</h2><p className="evidence-note">{progress?.provider === "codex_chatgpt" ? "生成元: Codex（ChatGPT）" : progress?.provider === "local_heuristic" ? "生成元: ルールによる抽出。設定でCodexを選択して再生成すると、議論を整理した議事録を作成できます。" : progress?.provider ? `生成元: ${progress.provider}` : "生成元: 不明（以前の記録）"}</p><p className="summary-copy">{value.summary}</p><div className="topics">{value.topics.map((topic) => <span key={topic}>{topic}</span>)}</div></section>
+  return <div className="summary"><div className="summary-regenerate"><button className="ghost" disabled={!meeting} onClick={() => meeting && downloadSummary(meeting, value)}>Markdownで保存</button><button className="ghost" disabled={!meeting || evidenceLoading || !!evidenceError || pdf.isPending} onClick={() => pdf.mutate()}>{pdf.isPending ? "PDFを作成中…" : "画像付きPDFで保存"}</button>{pdf.error && <p role="alert">PDFを保存できませんでした。{pdf.error.message}</p>}<button className="primary" onClick={onGenerate} disabled={regenerating}>{regenerating ? "要約を再生成中…" : "要約を再生成"}</button>{progress?.state === "failed" && <p className="error-box">{progress.error ?? "要約の再生成に失敗しました。"}</p>}</div><section><p className="eyebrow">OVERVIEW</p><h2>議事録</h2><p className="evidence-note">{progress?.provider === "codex_chatgpt" ? "生成元: Codex（ChatGPT）" : progress?.provider === "local_heuristic" ? "生成元: ルールによる抽出。設定でCodexを選択して再生成すると、議論を整理した議事録を作成できます。" : progress?.provider ? `生成元: ${progress.provider}` : "生成元: 不明（以前の記録）"}</p><p className="summary-copy">{value.summary}</p><div className="topics">{value.topics.map((topic) => <span key={topic}>{topic}</span>)}</div></section>
     <p className="evidence-note">各項目に関連する画面と発話を表示します。画像を押すと拡大できます。「発話中に表示」は時間の一致を示し、その画面について話したことを保証するものではありません。</p>
     {evidenceError && <ErrorBox error={evidenceError}/>}
     {value.overviewEvidenceIds?.length ? <section className="overview-evidence"><h2>要約の根拠</h2><SummaryEvidence item={{ text: value.summary, evidenceIds: value.overviewEvidenceIds }} transcripts={transcripts} screens={screens}/></section> : null}

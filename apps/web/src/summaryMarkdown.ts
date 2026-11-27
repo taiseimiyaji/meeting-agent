@@ -26,10 +26,14 @@ export function summaryMarkdown(meeting: Meeting, value: MeetingSummary) {
   return blocks.join("\n\n") + "\n";
 }
 
+export function summaryFilename(meeting: Meeting, extension: "md" | "pdf") {
+  const title = (meeting.title?.trim() || "ミーティング").replace(/[^\p{L}\p{N}\p{M} _-]/gu, "_").trim();
+  return `${meetingStartStamp(meeting).replace(" ", "_").replace(":", "-")}_${Array.from(title).slice(0, 50).join("") || "議事録"}.${extension}`;
+}
+
 export function downloadSummary(meeting: Meeting, value: MeetingSummary) {
   const markdown = summaryMarkdown(meeting, value);
-  const title = (meeting.title?.trim() || "ミーティング").replace(/[^\p{L}\p{N}\p{M} _-]/gu, "_").trim();
-  const filename = `${meetingStartStamp(meeting).replace(" ", "_").replace(":", "-")}_${Array.from(title).slice(0, 50).join("") || "議事録"}.md`;
+  const filename = summaryFilename(meeting, "md");
   const native = (window as Window & { webkit?: { messageHandlers?: {
     saveSummaryMarkdown?: { postMessage(payload: { filename: string; markdown: string }): void };
   } } }).webkit?.messageHandlers?.saveSummaryMarkdown;
