@@ -79,6 +79,7 @@ public final class MeetingStore: @unchecked Sendable {
                 }
             }
             try execute("CREATE TABLE IF NOT EXISTS audio_units(id TEXT PRIMARY KEY,meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,folder TEXT NOT NULL,payload TEXT NOT NULL,status TEXT NOT NULL,stored_bytes INTEGER NOT NULL,provider TEXT)")
+            try execute("CREATE INDEX IF NOT EXISTS audio_units_pending_meeting ON audio_units(meeting_id) WHERE status='pending'")
             try execute("CREATE INDEX IF NOT EXISTS audio_units_pending ON audio_units(folder,status)")
             try execute("CREATE INDEX IF NOT EXISTS screen_pending_queue ON screen_events(meeting_id,analysis_status,started_at_ms,id)")
         }
@@ -400,6 +401,7 @@ public final class MeetingStore: @unchecked Sendable {
         var ids: [String] = []
         try query("""
             SELECT m.id FROM meetings m WHERE m.status IN ('capturing','finalizing') OR
+            m.id IN (SELECT meeting_id FROM audio_units WHERE status='pending') OR
             (NOT EXISTS (SELECT 1 FROM summaries s WHERE s.meeting_id=m.id AND s.is_active=1)
              AND COALESCE((SELECT j.status FROM analysis_jobs j WHERE j.meeting_id=m.id AND j.kind='summarize' ORDER BY j.updated_at DESC,j.created_at DESC,j.rowid DESC LIMIT 1),'') != 'failed')
             ORDER BY m.started_at,m.id

@@ -3,6 +3,20 @@ import XCTest
 @testable import MeetingCore
 
 final class MeetingCoreTests: XCTestCase {
+    func testPendingAudioKeepsMeetingEligibleAfterSummaryFailure() throws {
+        let store = try MeetingStore(path: ":memory:")
+        try store.save(Meeting(id: "meeting", status: .completed))
+        try store.enqueue(.init(meetingId: "meeting", kind: "summarize"))
+        let job = try XCTUnwrap(store.claimNextAnalysisJob())
+        try store.failAnalysisJob(id: job.id, error: "Transcription incomplete")
+
+        for status in ["pending", "done"] {
+            try store.indexAudio(id: "chunk", meetingId: "meeting", folder: "Audio",
+                                 payload: "{}", status: status, bytes: 100)
+            XCTAssertEqual(try store.maintenanceMeetings().map(\.id), status == "pending" ? ["meeting"] : [])
+        }
+    }
+
     func testTranscriptJSONUsesCanonicalFlatTimeRange() throws {
         let event = TranscriptEvent(id: "t1", meetingId: "m1", revision: 2, timeRange: .init(startedAtMs: 100, endedAtMs: 250), speaker: .self, text: "hello", source: .microphone, isFinal: true)
         let data = try JSONEncoder().encode(event)
