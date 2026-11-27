@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, isAuthenticationError, subscribe } from "./api";
 import type { MeetingStatus, ScreenEvent, ServerEvent, Settings, TranscriptEvent, TranscriptionProgress, SummaryItem } from "./types";
 
+import { meetingName } from "./meetingName";
 import { downloadSummary } from "./summaryMarkdown";
 import { tabCapture } from "./TabCapture";
 import { AuthenticatedImage } from "./AuthenticatedImage";
@@ -64,7 +65,7 @@ function Home({ openMeeting, connected }: { openMeeting: (id: string) => void; c
   const activeMeeting = meetings.data?.find((m) => m.id === capture.data?.meetingId);
   return <><header><div><p className="eyebrow">TODAY</p><h1>会議の記憶を、手元に。</h1><p>発話と画面をひとつのタイムラインに記録します。</p></div></header>
     {capture.error ? <ErrorBox error={capture.error} /> : <section className={`capture-card ${isLive ? "live" : ""}`}>
-      <div><span className="live-dot" /><div><p>{isLive ? "CAPTURING NOW" : "READY TO CAPTURE"}</p><h2>{isLive ? activeMeeting?.title ?? "新しいミーティング" : "Captureを開始できます"}</h2><span>{isLive ? `${activeMeeting ? formatTime(duration(activeMeeting.startedAt)) : "--:--"} · ${capture.data?.videoFrames ?? 0} frames · 音声と画面を保存中` : "データはこのMac内に保存されます"}</span></div></div>
+      <div><span className="live-dot" /><div><p>{isLive ? "CAPTURING NOW" : "READY TO CAPTURE"}</p><h2>{isLive ? (activeMeeting ? meetingName(activeMeeting) : "新しいミーティング") : "Captureを開始できます"}</h2><span>{isLive ? `${activeMeeting ? formatTime(duration(activeMeeting.startedAt)) : "--:--"} · ${capture.data?.videoFrames ?? 0} frames · 音声と画面を保存中` : "データはこのMac内に保存されます"}</span></div></div>
       <div className="capture-actions">{!isLive && <button className="primary" disabled={tabStart.isPending || start.isPending} onClick={() => { setTabError(undefined); tabStart.mutate(); }}>{tabStart.isPending ? "タブを準備中…" : "Chromeの会議タブを選んで開始"}</button>}{isLive && capture.data?.meetingId && <button className="ghost" onClick={() => openMeeting(capture.data!.meetingId!)}>ライブ表示</button>}<button className={isLive ? "stop" : "ghost"} disabled={start.isPending || stop.isPending || tabStart.isPending} onClick={() => isLive ? stop.mutate() : start.mutate()}>{isLive ? "■  停止" : "ウインドウ収録"}</button></div>
     </section>}
     {!isLive && <p>Chromeでこの画面を開き、「Chrome タブ」と「タブの音声も共有する」を選択してください。収録中はこのMeeting Agentタブを開いたままにしてください。</p>}
@@ -79,13 +80,13 @@ function Home({ openMeeting, connected }: { openMeeting: (id: string) => void; c
 function MeetingCards({ meetings, loading, openMeeting }: { meetings: Awaited<ReturnType<typeof api.meetings>>; loading: boolean; openMeeting: (id: string) => void }) {
   if (loading) return <div className="skeleton-grid"><i/><i/><i/></div>;
   if (!meetings.length) return <Empty>まだミーティングはありません。</Empty>;
-  return <div className="meeting-grid">{meetings.map((m) => <button className="meeting-card" key={m.id} onClick={() => openMeeting(m.id)}><div><StatusBadge status={m.status}/><span>{date(m.startedAt)}</span></div><h3>{m.title || "名称未設定のミーティング"}</h3><p>{formatTime(duration(m.startedAt, m.endedAt))} · Timeline Evidence</p><span className="arrow">↗</span></button>)}</div>;
+  return <div className="meeting-grid">{meetings.map((m) => <button className="meeting-card" key={m.id} onClick={() => openMeeting(m.id)}><div><StatusBadge status={m.status}/><span>{date(m.startedAt)}</span></div><h3>{meetingName(m)}</h3><p>{formatTime(duration(m.startedAt, m.endedAt))} · Timeline Evidence</p><span className="arrow">↗</span></button>)}</div>;
 }
 
 function MeetingList({ openMeeting }: { openMeeting: (id: string) => void }) {
   const query = useQuery({ queryKey: ["meetings"], queryFn: api.meetings });
   const [filter, setFilter] = useState("");
-  const rows = query.data?.filter((m) => (m.title ?? "").toLowerCase().includes(filter.toLowerCase())) ?? [];
+  const rows = query.data?.filter((m) => meetingName(m).toLowerCase().includes(filter.toLowerCase())) ?? [];
   return <><header><div><p className="eyebrow">LIBRARY</p><h1>ミーティング</h1><p>取得済みのTimelineとEvidenceを確認できます。</p></div><input className="search" aria-label="ミーティングを検索" placeholder="タイトルを検索" value={filter} onChange={(e) => setFilter(e.target.value)} /></header>
     {query.error ? <ErrorBox error={query.error}/> : <MeetingCards meetings={rows} loading={query.isLoading} openMeeting={openMeeting}/>}</>;
 }
@@ -131,7 +132,7 @@ function MeetingDetail({ id, back, connected }: { id: string; back: () => void; 
     return (transcript.data ?? []).map((item) => ({ ...item, attributedSpeaker: names.get(item.id) }));
   }, [transcript.data, summary.data?.speakerAttributions]);
   if (meeting.error) return <ErrorBox error={meeting.error}/>;
-  return <><button className="back" onClick={back}>← ミーティング一覧</button><header className="detail-header"><div>{meeting.data && <StatusBadge status={meeting.data.status}/>}<h1>{meeting.data?.title ?? "読み込み中…"}</h1><p>{meeting.data ? date(meeting.data.startedAt) : ""} · {meeting.data ? formatTime(duration(meeting.data.startedAt, meeting.data.endedAt)) : ""}</p></div></header>
+  return <><button className="back" onClick={back}>← ミーティング一覧</button><header className="detail-header"><div>{meeting.data && <StatusBadge status={meeting.data.status}/>}<h1>{meeting.data ? meetingName(meeting.data) : "読み込み中…"}</h1><p>{meeting.data ? date(meeting.data.startedAt) : ""} · {meeting.data ? formatTime(duration(meeting.data.startedAt, meeting.data.endedAt)) : ""}</p></div></header>
     {meeting.data && ["interrupted", "failed", "partially_completed"].includes(meeting.data.status) && <div className="evidence-warning"><strong>一部の処理が完了していません</strong><span>取得済みのTranscriptとScreen Evidenceは引き続き閲覧できます。</span></div>}
     <div className="tabs"><button className={tab === "timeline" ? "active" : ""} onClick={() => setTab("timeline")}>Timeline</button><button className={tab === "summary" ? "active" : ""} onClick={() => setTab("summary")}>Summary</button></div>
     {tab === "timeline" ? <><TranscriptionRecovery value={transcriptionProgress.data} transcriptCount={transcript.data?.length ?? 0} retrying={retryTranscription.isPending} error={retryTranscription.error} onRetry={() => retryTranscription.mutate()}/><div className="timeline-layout">{transcript.error && <ErrorBox error={transcript.error}/>}<TranscriptPanel items={attributed} loading={transcript.isLoading} focus={focusTranscript} onScreen={(screenId) => { setFocusScreen(screenId); document.getElementById(`screen-${screenId}`)?.scrollIntoView({ behavior: "smooth" }); }}/><ScreensPanel items={screens.data ?? []} loading={screens.isLoading} focus={focusScreen} onTranscript={(screenId) => { const hit = transcript.data?.find((t) => t.screenRefs.some((ref) => ref.screenId === screenId)); if (hit) { setFocusTranscript(hit.possibleEchoOf ?? hit.id); document.getElementById(`transcript-${hit.possibleEchoOf ?? hit.id}`)?.scrollIntoView({ behavior: "smooth" }); } }}/></div></> : <SummaryPanel meeting={meeting.data} transcripts={attributed} screens={screens.data ?? []} evidenceLoading={transcript.isLoading || screens.isLoading} evidenceError={transcript.error ?? screens.error} value={summary.data} progress={summaryProgress.data} loading={summary.isLoading || summaryProgress.isLoading} error={summary.error ?? summaryProgress.error ?? summarize.error} generating={summarize.isPending} onGenerate={() => summarize.mutate()}/>}</>;
@@ -184,7 +185,7 @@ function SummaryPanel({ meeting, value, progress, loading, error, generating, on
   }
   const regenerating = generating || ["queued", "running", "retrying"].includes(progress?.state ?? "");
   const evidence = { transcripts, screens, evidenceLoading, evidenceError };
-  return <div className="summary"><div className="summary-regenerate"><button className="ghost" onClick={() => downloadSummary(meeting, value)}>Markdownで保存</button><button className="primary" onClick={onGenerate} disabled={regenerating}>{regenerating ? "要約を再生成中…" : "要約を再生成"}</button>{progress?.state === "failed" && <p className="error-box">{progress.error ?? "要約の再生成に失敗しました。"}</p>}</div><section><p className="eyebrow">OVERVIEW</p><h2>議事録</h2><p className="evidence-note">{progress?.provider === "codex_chatgpt" ? "生成元: Codex（ChatGPT）" : progress?.provider === "local_heuristic" ? "生成元: ルールによる抽出。設定でCodexを選択して再生成すると、議論を整理した議事録を作成できます。" : progress?.provider ? `生成元: ${progress.provider}` : "生成元: 不明（以前の記録）"}</p><p className="summary-copy">{value.summary}</p><div className="topics">{value.topics.map((topic) => <span key={topic}>{topic}</span>)}</div></section>
+  return <div className="summary"><div className="summary-regenerate"><button className="ghost" disabled={!meeting} onClick={() => meeting && downloadSummary(meeting, value)}>Markdownで保存</button><button className="primary" onClick={onGenerate} disabled={regenerating}>{regenerating ? "要約を再生成中…" : "要約を再生成"}</button>{progress?.state === "failed" && <p className="error-box">{progress.error ?? "要約の再生成に失敗しました。"}</p>}</div><section><p className="eyebrow">OVERVIEW</p><h2>議事録</h2><p className="evidence-note">{progress?.provider === "codex_chatgpt" ? "生成元: Codex（ChatGPT）" : progress?.provider === "local_heuristic" ? "生成元: ルールによる抽出。設定でCodexを選択して再生成すると、議論を整理した議事録を作成できます。" : progress?.provider ? `生成元: ${progress.provider}` : "生成元: 不明（以前の記録）"}</p><p className="summary-copy">{value.summary}</p><div className="topics">{value.topics.map((topic) => <span key={topic}>{topic}</span>)}</div></section>
     <p className="evidence-note">各項目に関連する画面と発話を表示します。画像を押すと拡大できます。「発話中に表示」は時間の一致を示し、その画面について話したことを保証するものではありません。</p>
     {evidenceError && <ErrorBox error={evidenceError}/>}
     {value.overviewEvidenceIds?.length ? <section className="overview-evidence"><h2>要約の根拠</h2><SummaryEvidence item={{ text: value.summary, evidenceIds: value.overviewEvidenceIds }} transcripts={transcripts} screens={screens}/></section> : null}

@@ -119,7 +119,9 @@ it("exports the displayed minutes as Markdown from the embedded summary screen",
     fireEvent.click(screen.getByRole("button", { name: "Summary" }));
     fireEvent.click(await screen.findByRole("button", { name: "Markdownで保存" }));
     const [file] = postMessage.mock.calls[0];
-    expect(file.filename).toBe("検証会議.md");
+    const local = new Date("2026-09-07T00:00:00Z");
+    const stamp = new Intl.DateTimeFormat("sv-SE", { dateStyle: "short", timeStyle: "short" }).format(local);
+    expect(file.filename).toBe(stamp.replace(" ", "_").replace(":", "-") + "_検証会議.md");
     expect(file.markdown).toContain("## 次のリリース\n\n金曜日に公開する。");
     expect(file.markdown).not.toContain("private-id");
   } finally {

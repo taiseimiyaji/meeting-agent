@@ -1,9 +1,11 @@
 import type { Meeting, MeetingSummary, SummaryItem } from "./types";
 
-export function summaryMarkdown(meeting: Meeting | undefined, value: MeetingSummary) {
-  const title = meeting?.title?.trim() || "会議の議事録";
+import { meetingName, meetingStartStamp } from "./meetingName";
+
+export function summaryMarkdown(meeting: Meeting, value: MeetingSummary) {
+  const title = meetingName(meeting);
   const blocks = [`# ${title}`];
-  if (meeting?.startedAt) {
+  if (meeting.title?.trim()) {
     blocks.push(new Date(meeting.startedAt).toLocaleString("ja-JP"));
   }
   blocks.push("## 要約", value.summary);
@@ -24,10 +26,10 @@ export function summaryMarkdown(meeting: Meeting | undefined, value: MeetingSumm
   return blocks.join("\n\n") + "\n";
 }
 
-export function downloadSummary(meeting: Meeting | undefined, value: MeetingSummary) {
+export function downloadSummary(meeting: Meeting, value: MeetingSummary) {
   const markdown = summaryMarkdown(meeting, value);
-  const title = (meeting?.title || "議事録").replace(/[^\p{L}\p{N}\p{M} _-]/gu, "_").trim();
-  const filename = `${Array.from(title).slice(0, 50).join("") || "議事録"}.md`;
+  const title = (meeting.title?.trim() || "ミーティング").replace(/[^\p{L}\p{N}\p{M} _-]/gu, "_").trim();
+  const filename = `${meetingStartStamp(meeting).replace(" ", "_").replace(":", "-")}_${Array.from(title).slice(0, 50).join("") || "議事録"}.md`;
   const native = (window as Window & { webkit?: { messageHandlers?: {
     saveSummaryMarkdown?: { postMessage(payload: { filename: string; markdown: string }): void };
   } } }).webkit?.messageHandlers?.saveSummaryMarkdown;
