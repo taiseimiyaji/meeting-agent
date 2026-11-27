@@ -9,14 +9,12 @@ public enum MeetingAnalysisRuntimeError: LocalizedError {
     case meetingNotFound(String)
     case unsafeMeetingID(String)
     case audioArchiveMissing(String)
-    case transcriptionEmpty(String)
 
     public var errorDescription: String? {
         switch self {
         case .meetingNotFound(let id): "Meeting \(id) was not found."
         case .unsafeMeetingID(let id): "Meeting ID is unsafe for export: \(id)"
         case .audioArchiveMissing(let id): "No saved audio is available for meeting \(id)."
-        case .transcriptionEmpty: "音声から文字を認識できませんでした。保存音声を確認し、認識モデルを変更するか再実行してください。"
         }
     }
 }
@@ -281,10 +279,7 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
                     let silent = try isSilent(file)
                     let result = silent ? OfflineTranscript(text: "", startedAtMs: 0, endedAtMs: 0) :
                         try await withTranscriptionDeadline { try await provider.transcribe(file: file) }
-                    // An empty result for non-silent input remains retryable.
-                    if !silent && result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        throw MeetingAnalysisRuntimeError.transcriptionEmpty(meetingID)
-                    }
+                    let noSpeech = result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     var text = result.text
                     let source: AudioSource = chunk.kind == CaptureOutputKind.microphone.rawValue ? .microphone : .system
                     var start = min(chunk.endedAtMs, chunk.startedAtMs + max(0, result.startedAtMs))
@@ -302,9 +297,11 @@ public final class MeetingAnalysisRuntime: @unchecked Sendable {
                     let event = MeetingCore.TranscriptEvent(id: chunk.id, meetingId: meetingID,
                         timeRange: .init(startedAtMs: start, endedAtMs: max(start, min(chunk.endedAtMs, chunk.startedAtMs + result.endedAtMs))),
                         speaker: source == .microphone ? .self : .remote, text: text, source: source, isFinal: true)
-                    try store.saveRecoveredTranscript(event)
-                    if !silent { _ = try store.associateVisibleScreens(transcriptId: event.id) }
-                    try JSONEncoder().encode(["provider": provider.provider, "status": silent ? "silence" : "completed"])
+                    if !noSpeech {
+                        try store.saveRecoveredTranscript(event)
+                        _ = try store.associateVisibleScreens(transcriptId: event.id)
+                    }
+                    try JSONEncoder().encode(["provider": provider.provider, "status": silent ? "silence" : (noSpeech ? "no_speech" : "completed")])
                         .write(to: receipt, options: .atomic)
                     try? FileManager.default.removeItem(at: folder.appendingPathComponent("\(chunk.id).error"))
                     // Packing is scheduled separately at idle, after analysis completes.

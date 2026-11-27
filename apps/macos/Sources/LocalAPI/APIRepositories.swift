@@ -106,7 +106,8 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
             case .completed: state = .completed
             }
         } else if failed > 0 { state = .failed }
-        else if live || total > completed { state = .queued }
+        else if live { state = .queued }
+        else if total > completed { state = .notStarted }
         else { state = total > 0 || hasTranscript ? .completed : .notStarted }
         let archiveErrors = (try? JSONDecoder().decode([String].self, from: Data(contentsOf: directory.appendingPathComponent("errors.json"))))?.last
         return .init(state: state, retryCount: job?.retryCount ?? 0, error: job?.error ?? archiveErrors,
@@ -119,7 +120,10 @@ public final class LocalMeetingRepository: MeetingAPIRepository, @unchecked Send
     public func enqueue(meetingId: String, kind: String) throws {
         let priority = kind == "transcribe" ? 3 : kind == "summarize" ? 2 : 1
         if kind == "transcribe" {
-            let rerunAll = try store.latestAnalysisJob(meetingId: meetingId, kind: kind)?.status == .completed
+            let progress = try transcriptionProgress(meetingId: meetingId)
+            let latest = try store.latestAnalysisJob(meetingId: meetingId, kind: kind)
+            if latest?.status == .pending || latest?.status == .processing { return }
+            let rerunAll = latest?.status == .completed && progress.state == .completed
             let directory = evidenceRoot.appendingPathComponent(meetingId).appendingPathComponent("Audio")
             for folder in [directory] + ["legacy-systemAudio", "legacy-microphone"].map({ directory.appendingPathComponent($0) }) {
                 store.invalidateAudioIndex(folder: folder.path)

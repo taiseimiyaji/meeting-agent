@@ -81,7 +81,15 @@ public final class AppleSpeechFileTranscriber: FileTranscriber, @unchecked Senda
                             let end = Int64(segments.last.map { ($0.timestamp + $0.duration) * 1000 } ?? 0)
                             gate.succeed(.init(text: result.bestTranscription.formattedString,
                                               startedAtMs: start, endedAtMs: max(start, end)))
-                        } else if let error { gate.fail(error) }
+                        } else if let error {
+                            let recognitionError = error as NSError
+                            // SFSpeechRecognitionTask reports an utterance-free file with this domain/code.
+                            if recognitionError.domain == "kAFAssistantErrorDomain", recognitionError.code == 1110 {
+                                gate.succeed(.init(text: "", startedAtMs: 0, endedAtMs: 0))
+                            } else {
+                                gate.fail(error)
+                            }
+                        }
                     }
                     gate.retain(task, recognizer: recognizer)
                 }

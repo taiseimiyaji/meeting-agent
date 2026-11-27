@@ -47,12 +47,19 @@ actor TestFileTranscriber: FileTranscriber {
     nonisolated let provider = "verification"
     var failNegative: Bool
     private(set) var calls = 0
-    init(failNegative: Bool = false) { self.failNegative = failNegative }
+    let noSpeechSample: Float?
+    init(failNegative: Bool = false, noSpeechSample: Float? = nil) {
+        self.failNegative = failNegative
+        self.noSpeechSample = noSpeechSample
+    }
     func transcribe(file: URL) async throws -> OfflineTranscript {
         calls += 1
         let audio = try AVAudioFile(forReading: file)
         let buffer = AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: 1)!
         try audio.read(into: buffer)
+        if let noSpeechSample, buffer.floatChannelData![0][0] == noSpeechSample {
+            return .init(text: "  ", startedAtMs: 0, endedAtMs: 0)
+        }
         if failNegative && buffer.floatChannelData![0][0] < 0 { throw VerificationError(message: "injected track failure") }
         return .init(text: "検証用の発話です", startedAtMs: 0, endedAtMs: Int64(Double(audio.length) / audio.processingFormat.sampleRate * 1000))
     }
@@ -258,7 +265,46 @@ actor TestFileTranscriber: FileTranscriber {
     }
 }
 
+func verifyArchivedTranscriptionRecovery() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let meeting = Meeting(status: .completed)
+    let folder = root.appendingPathComponent(meeting.id).appendingPathComponent("Audio")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let store = try MeetingStore(path: root.appendingPathComponent("db.sqlite").path)
+    try store.save(meeting)
+    try store.enqueue(.init(id: "summary", meetingId: meeting.id, kind: "summarize"))
+    _ = try store.claimNextAnalysisJob()
+    try store.failAnalysisJob(id: "summary", error: "No transcript yet")
+
+    let buffer = try pcm()
+    let backgroundSample: Float = 0.001
+    let background = try pcm(sample: backgroundSample)
+    for index in 0..<9 {
+        let writer = try AudioArchiveWriter(directory: folder)
+        try writer.write(index == 2 ? background : buffer, kind: .microphone, timestampMs: Int64(index * 1000))
+        writer.finish()
+    }
+    let repository = try LocalMeetingRepository(store: store, evidenceRoot: root)
+    let provider = TestFileTranscriber(noSpeechSample: backgroundSample)
+    let runtime = try MeetingAnalysisRuntime(store: store, evidenceRoot: root, fileTranscriber: provider)
+    try repository.enqueue(meetingId: meeting.id, kind: "transcribe")
+    _ = try await runtime.processNext()
+    let partial = try repository.transcriptionProgress(meetingId: meeting.id)
+    try check(partial.completedChunks == 4 && partial.totalChunks == 9 && partial.state == .notStarted,
+              "incomplete idle archive allows manual recovery")
+    try repository.enqueue(meetingId: meeting.id, kind: "transcribe")
+    _ = try await runtime.processNext()
+    try check(try runtime.enqueueMissingTranscriptions() == 1, "failed summary does not block the next audio batch")
+    _ = try await runtime.processNext()
+    let final = try repository.transcriptionProgress(meetingId: meeting.id)
+    try check(final.completedChunks == 9 && final.state == .completed, "all archived chunks complete")
+    try check(try store.transcripts(meetingId: meeting.id).count == 8, "unrecognized background audio completes without a transcript event")
+    try check(await provider.calls == 9, "manual and automatic recovery preserve completed chunks")
+}
+
 func verifySummaryReadiness() async throws {
+    try await verifyArchivedTranscriptionRecovery()
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
